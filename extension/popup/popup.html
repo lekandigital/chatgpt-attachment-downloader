@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatGPT Attachment Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="app-icon" aria-hidden="true">↓</div>
+    <div><h1>ChatGPT Attachment<br>Downloader</h1><p class="eyebrow">Your files. One place.</p></div>
+    <span class="version">v1.0</span>
+  </header>
+  <main>
+    <section class="context" aria-label="Current conversation">
+      <div class="context-top"><span class="label">CURRENT CONVERSATION</span><span id="auth" class="pill">Connecting…</span></div>
+      <p id="conversation" class="conversation">Connecting to your tab…</p>
+      <span id="conversation-id" class="muted"></span>
+    </section>
+    <p id="connection-note" class="note" role="status"></p>
+    <button id="reload" class="secondary full" hidden>Reload page to capture authentication</button>
+    <section id="notice" class="notice" hidden>
+      <p>Chrome may ask to allow multiple downloads. Choose <strong>Allow</strong> to continue the batch.</p>
+      <button id="acknowledge" class="text-button">Got it</button>
+    </section>
+    <div class="actions primary-actions">
+      <button id="scan" class="secondary" disabled>Scan attachments</button>
+      <button id="download-all" class="primary" disabled>Download all</button>
+      <button id="stop" class="danger" hidden>Stop</button>
+    </div>
+    <section id="progress-section" aria-label="Download progress" hidden>
+      <div class="progress-heading"><strong id="phase">Ready</strong><span id="progress-count">0 / 0</span></div>
+      <progress id="progress" value="0" max="1" aria-label="Files processed"></progress>
+      <p id="totals" class="muted"></p>
+      <p id="active-file" class="active-file"></p>
+      <p id="countdown" class="note" aria-live="polite"></p>
+    </section>
+    <p id="error" class="error" role="alert" hidden></p>
+    <p id="partial" class="note" hidden>The API returned a partial list. Additional attachments may exist.</p>
+    <p id="large-file" class="note" hidden>This file exceeds 250 MB and may use substantial browser memory.</p>
+    <section id="attachments" hidden>
+      <div class="list-heading"><h2>Attachments <span id="file-count"></span></h2><span id="selected-count" class="muted"></span></div>
+      <label class="sr-only" for="search">Filter attachments by filename</label>
+      <input id="search" type="search" placeholder="Find a file…" autocomplete="off">
+      <div class="selection-actions">
+        <button id="select-all" class="text-button">Select all</button>
+        <button id="select-none" class="text-button">Select none</button>
+        <button id="select-failed" class="text-button">Select failed</button>
+        <button id="clear-completed" class="text-button">Hide completed</button>
+      </div>
+      <div id="file-list" class="file-list" aria-label="Attachments"></div>
+      <p id="empty-list" class="empty" hidden>No attachments found in this conversation.</p>
+      <div class="actions"><button id="download-selected" class="primary" disabled>Download selected</button><button id="resume" class="secondary" disabled>Resume</button></div>
+      <button id="retry-failed" class="text-button full" disabled>Retry failed</button>
+    </section>
+    <p id="handoff-note" class="footnote" hidden>“Downloaded” means handed to Chrome. Check Chrome’s Downloads for disk completion. Keep the ChatGPT tab open.</p>
+    <details id="diagnostics">
+      <summary>Details &amp; privacy</summary>
+      <p class="muted">Credentials stay in page memory. No analytics or uploads. Filenames and progress are saved locally for the last eight conversations you scan.</p>
+      <div id="log" class="log" aria-label="Diagnostic log"></div>
+      <div class="actions"><button id="export" class="secondary">Export diagnostics</button><button id="forget" class="secondary">Forget saved history</button></div>
+      <p id="privacy-result" class="muted" role="status"></p>
+    </details>
+  </main>
+  <footer><span class="privacy-dot" aria-hidden="true"></span>Local processing · No telemetry</footer>
+  <script src="popup.js"></script>
+</body>
+</html>
