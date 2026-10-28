@@ -22,11 +22,19 @@ if (location.origin === Config.ORIGIN && window === window.top && !window[INSTAL
     } catch (error) { release(url); throw error; }
     finally { anchor.remove(); }
   }
+  function saveLink(url, filename) {
+    // Only reached for allowlisted storage links that force Content-Disposition: attachment
+    // (Endpoints.linkDownload), so Chrome downloads instead of navigating the tab.
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = filename; anchor.rel = 'noopener noreferrer'; anchor.hidden = true;
+    try { (document.body || document.documentElement).appendChild(anchor); anchor.click(); }
+    finally { anchor.remove(); }
+  }
   function post(payload) {
     window.postMessage({ namespace: Config.NAMESPACE, direction: 'TO_EXTENSION', ...payload }, Config.ORIGIN);
   }
   controller = JobController.create({ auth, fetcher, href: () => location.href,
-    title: () => document.title.replace(/\s*[-|]\s*ChatGPT\s*$/i, ''), save,
+    title: () => document.title.replace(/\s*[-|]\s*ChatGPT\s*$/i, ''), save, saveLink,
     emit: state => post({ type: 'STATE', requestId: 'event', state }) });
   window.addEventListener('message', event => {
     if (event.source !== window || event.origin !== Config.ORIGIN || !Protocol.envelope(event.data, 'TO_PAGE')) return;

@@ -7,6 +7,7 @@ let connected = false;
 let storageError = false;
 let localError = null;
 let hideCompleted = false;
+let typeFilter = 'all';
 let listSignature = '';
 const selected = new Set();
 const LABELS = { pending: '○ Pending', resolving: '↻ Resolving', downloading: '↓ Downloading', downloaded: '✓ Downloaded',
@@ -14,7 +15,27 @@ const LABELS = { pending: '○ Pending', resolving: '↻ Resolving', downloading
 const LOGS = { CONVERSATION: 'Conversation detected', AUTH_READY: 'Authentication detected', AUTH_EXPIRED: 'Authentication waiting',
   SCAN_START: 'Scanning attachments', SCAN_DONE: 'Scan completed', BATCH_START: 'Batch started', FILE_SAVED: 'File handed to Chrome',
   METADATA: 'Resolved a file download link', RATE_LIMIT: 'Rate limited; waiting to retry', RETRY: 'Retrying request',
-  STOPPED: 'Stopped', COMPLETED: 'Batch completed', SIZE_RETRY: 'Size mismatch; retrying once', ERROR: 'Request failed' };
+  STOPPED: 'Stopped', COMPLETED: 'Batch completed', SIZE_RETRY: 'Size mismatch; retrying once', ERROR: 'Request failed',
+  LINK_SAVED: 'Storage link handed to Chrome (not verified)' };
+const FAILURE_LABELS = { SIZE_MISMATCH: '! Size mismatch', HTML_RESPONSE: '! Received HTML', HTTP_429: '! Rate limited',
+  AUTH_EXPIRED: '! Authentication expired', NETWORK: '! Network error', TIMEOUT: '! Timed out' };
+const TYPES = {
+  pdf: new Set(['pdf']),
+  image: new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'bmp', 'tif', 'tiff', 'svg', 'avif', 'ico']),
+  document: new Set(['doc', 'docx', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf', 'epub', 'pages', 'numbers', 'key']),
+  text: new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'ndjson', 'xml', 'yaml', 'yml', 'log', 'srt', 'vtt', 'eml',
+    'html', 'htm', 'css', 'js', 'mjs', 'ts', 'tsx', 'jsx', 'py', 'ipynb', 'rb', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'cs', 'sh', 'sql', 'toml', 'ini', 'tex']),
+};
+function extensionOf(filename) { return filename.match(/\.([a-z0-9]{1,12})$/i)?.[1]?.toLowerCase() || ''; }
+function typeOf(filename) {
+  const ext = extensionOf(filename);
+  return Object.keys(TYPES).find(type => TYPES[type].has(ext)) || 'other';
+}
+function statusLabel(file) {
+  if (file.status === 'failed') return FAILURE_LABELS[file.error?.code] || LABELS.failed;
+  if (file.status === 'downloaded' && file.delivery === 'link') return '✓ Sent to Chrome';
+  return LABELS[file.status] || 'Pending';
+}
 function sizeLabel(size) {
   if (size === null || size === undefined) return 'Size unknown';
   if (size < 1024) return `${size} B`;
@@ -42,7 +63,8 @@ async function send(message) {
 }
 function visibleFiles() {
   const query = $('search').value.trim().toLowerCase();
-  return (state?.files || []).filter(file => (!hideCompleted || file.status !== 'downloaded') && file.filename.toLowerCase().includes(query));
+  return (state?.files || []).filter(file => (!hideCompleted || file.status !== 'downloaded') &&
+    (typeFilter === 'all' || typeOf(file.filename) === typeFilter) && file.filename.toLowerCase().includes(query));
 }
 function renderFiles(busy) {
   const visible = visibleFiles();
@@ -62,10 +84,11 @@ function renderFiles(busy) {
     const label = document.createElement('label'); label.className = 'file-name'; label.htmlFor = checkbox.id; label.textContent = file.filename;
     const meta = document.createElement('div'); meta.className = 'file-meta';
     const detail = document.createElement('span');
-    const extension = file.filename.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toUpperCase() || 'FILE';
-    detail.textContent = `${extension} · ${sizeLabel(file.actualSize ?? file.expectedSize)}${file.verified ? ' · Verified' : ''}`;
+    const extension = extensionOf(file.filename).toUpperCase() || 'FILE';
+    const check = file.verified ? ' · Verified' : file.delivery === 'link' ? ' · Not verified' : '';
+    detail.textContent = `${extension} · ${sizeLabel(file.actualSize ?? file.expectedSize)}${check}`;
     const status = document.createElement('span'); status.className = `file-status ${file.status === 'downloaded' ? 'success' : file.status === 'failed' ? 'failed' : ''}`;
-    status.textContent = LABELS[file.status] || 'Pending';
+    status.textContent = statusLabel(file);
     meta.append(detail, status); info.append(label, meta);
     if (file.error) {
       const reason = document.createElement('p'); reason.className = 'file-reason'; reason.textContent = errorLabel(file.error); info.append(reason);
@@ -85,8 +108,8 @@ function render() {
   const downloaded = files.filter(file => file.status === 'downloaded').length;
   const failed = files.filter(file => file.status === 'failed').length;
   const remaining = files.length - downloaded - failed;
-  const canDownload = ready && scanned && acknowledged && !busy && !pendingAction;
-  $('auth').textContent = state?.auth.detected ? '● Auth ready' : state?.auth.expired ? '○ Auth expired' : '○ Auth waiting';
+  const canDownload = ready && scanned && !busy && !pendingAction;
+  $('auth').textContent = !tabId ? 'Not on ChatGPT' : state?.auth.detected ? '● Auth ready' : state?.auth.expired ? '○ Auth expired' : '○ Auth waiting';
   $('auth').className = `pill ${state?.auth.detected ? 'ready' : ''}`;
   $('conversation').textContent = state?.conversationId ? state.title || 'ChatGPT conversation' : tabId ? 'No conversation detected' : 'Open a ChatGPT conversation';
   $('conversation-id').textContent = state?.conversationId ? `${state.conversationId.slice(0, 8)}…${state.conversationId.slice(-4)}` : '';
@@ -100,13 +123,18 @@ function render() {
   $('stop').hidden = !busy;
   $('stop').disabled = false;
   $('progress-section').hidden = !state || (!scanned && !busy && state.batch.status === 'idle');
+  const active = files.find(file => file.id === state?.activeId);
   $('phase').textContent = state?.waiting === 'rate_limit' ? 'Rate limited' : state?.scan.status === 'scanning' ? 'Scanning' :
+    active?.status === 'resolving' ? 'Resolving file…' :
     ({ running: 'Downloading', stopped: 'Stopped', paused: 'Authentication paused', completed: failed ? 'Completed with errors' : 'Completed', idle: 'Ready' }[state?.batch.status] || 'Ready');
   $('progress-count').textContent = `${downloaded + failed} / ${files.length} files`;
   $('progress').max = files.length || 1; $('progress').value = downloaded + failed;
   $('totals').textContent = `${downloaded} downloaded · ${failed} failed · ${remaining} remaining`;
-  const active = files.find(file => file.id === state?.activeId);
-  $('active-file').textContent = active ? `${active.filename} · ${sizeLabel(active.expectedSize)}` : '';
+  const received = state?.activeBytes;
+  const total = active?.expectedSize;
+  $('active-file').textContent = !active ? '' : received === null || received === undefined
+    ? `${active.filename} · ${sizeLabel(total)}`
+    : `${active.filename} · ${sizeLabel(received)}${total ? ` of ${sizeLabel(total)}` : ''}`;
   const countdown = state?.retryAt ? Math.max(0, Math.ceil((state.retryAt - Date.now()) / 1000)) : 0;
   $('countdown').textContent = state?.retryAt ? `${state.waiting === 'rate_limit' ? 'Rate limited. ' : ''}Retrying in ${countdown}s…` : '';
   const error = localError || (storageError ? { code: 'STORAGE' } : state?.error);
@@ -123,6 +151,8 @@ function render() {
   $('retry-failed').disabled = !canDownload || !failed;
   for (const id of ['select-all', 'select-none', 'select-failed']) $(id).disabled = busy;
   $('clear-completed').textContent = hideCompleted ? 'Show completed' : 'Hide completed';
+  for (const chip of document.querySelectorAll('#type-filters .chip')) chip.setAttribute('aria-pressed', String(chip.dataset.type === typeFilter));
+  $('export-list').disabled = !files.length;
   $('handoff-note').hidden = !files.length;
   $('forget').disabled = busy;
   $('export').disabled = !state;
@@ -132,7 +162,10 @@ function render() {
 }
 async function command(type) {
   if (!tabId || (!state && type !== 'GET_STATUS')) return;
-  pendingAction = true; localError = null; render();
+  pendingAction = true; localError = null;
+  // Starting a batch is the acknowledgement: the notice was already on screen above the button.
+  if (!acknowledged && type !== 'SCAN_FILES' && type !== 'STOP_DOWNLOADS') acknowledged = (await send({ type: 'ACK_DOWNLOADS' })).ok === true;
+  render();
   const result = await send({ type: 'UI_COMMAND', tabId, command: { type, conversationId: state?.conversationId,
     ...(type === 'DOWNLOAD_SELECTED' ? { ids: [...selected] } : {}) } });
   if (result.state) update(result.state);
@@ -147,18 +180,28 @@ $('select-none').addEventListener('click', () => { selected.clear(); render(); }
 $('select-failed').addEventListener('click', () => { selected.clear(); visibleFiles().filter(f => f.status === 'failed').forEach(f => selected.add(f.id)); render(); });
 $('clear-completed').addEventListener('click', () => { hideCompleted = !hideCompleted; render(); });
 $('search').addEventListener('input', render);
+for (const chip of document.querySelectorAll('#type-filters .chip')) chip.addEventListener('click', () => { typeFilter = chip.dataset.type; render(); });
 $('acknowledge').addEventListener('click', async () => { const result = await send({ type: 'ACK_DOWNLOADS' }); acknowledged = result.ok; render(); });
 $('reload').addEventListener('click', async () => { await send({ type: 'RELOAD_PAGE', tabId }); window.close(); });
 $('forget').addEventListener('click', async () => {
   const result = await send({ type: 'CLEAR_HISTORY' });
   $('privacy-result').textContent = result.ok ? 'Saved history cleared. Open tabs may save new progress when their state changes.' : 'Saved history could not be cleared.';
 });
-$('export').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(Safety.diagnostics(state), null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a'); link.href = url; link.download = 'attachment-downloader-diagnostics.json';
+function exportFile(contents, type, filename) {
+  const url = URL.createObjectURL(new Blob([contents], { type }));
+  const link = document.createElement('a'); link.href = url; link.download = filename;
   document.body.appendChild(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+$('export').addEventListener('click', () => {
+  exportFile(JSON.stringify(Safety.diagnostics(state), null, 2), 'application/json', 'attachment-downloader-diagnostics.json');
+});
+$('export-list').addEventListener('click', () => {
+  // Sanitized state only: names, IDs, sizes, statuses. No links or credentials exist in the popup.
+  const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const rows = [['filename', 'fileId', 'sizeBytes', 'status', 'error'], ...(state?.files || []).map(file =>
+    [file.filename, file.id, file.actualSize ?? file.expectedSize ?? '', file.status, file.error?.code || ''])];
+  exportFile(rows.map(row => row.map(cell).join(',')).join('\r\n'), 'text/csv', `attachments-${(state?.conversationId || 'list').slice(0, 8)}.csv`);
 });
 async function poll() {
   if (tabId && !pendingAction) {
@@ -170,6 +213,7 @@ async function poll() {
   }
   setTimeout(poll, 900);
 }
+$('version').textContent = `v${chrome.runtime.getManifest().version}`;
 void (async () => {
   const view = await send({ type: 'OPEN_VIEW' });
   tabId = view.tabId ?? null; acknowledged = view.acknowledged === true;

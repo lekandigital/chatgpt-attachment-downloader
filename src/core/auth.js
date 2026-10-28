@@ -1,5 +1,6 @@
 const Authentication = (() => {
-  const REPLAY_HEADERS = new Set(['authorization', 'oai-device-id', 'oai-language', 'oai-account-id',
+  // Stable account/client identity only. Per-request headers (trace IDs, target paths, sentinel tokens) are never replayed.
+  const REPLAY_HEADERS = new Set(['authorization', 'oai-device-id', 'oai-session-id', 'oai-language', 'oai-account-id',
     'chatgpt-account-id', 'openai-organization', 'openai-project', 'oai-client-version', 'oai-client-build-number']);
   function create(onChange) {
     // This closure is instantiated only in MAIN. None of these values are exported to the bridge.
@@ -15,10 +16,12 @@ const Authentication = (() => {
       if (!headers.get('authorization')) return;
       const next = new Headers();
       for (const name of REPLAY_HEADERS) if (headers.has(name)) next.set(name, headers.get(name));
+      // ChatGPT sends many authenticated requests; only a readiness transition is worth announcing.
+      const changed = !captured;
       captured = next;
       version += 1;
       expired = false;
-      onChange?.();
+      if (changed) onChange?.();
     }
     function get() {
       if (!captured) throw new Transfer.Fault(expired ? 'AUTH_EXPIRED' : 'AUTH_WAITING');

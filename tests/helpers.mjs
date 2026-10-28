@@ -5,13 +5,13 @@ import { webcrypto } from 'node:crypto';
 const sourceFiles = ['config', 'safety', 'protocol', 'endpoints', 'auth', 'transfer', 'files', 'controller'];
 export const source = (await Promise.all(sourceFiles.map(file => readFile(new URL(`../src/core/${file}.js`, import.meta.url), 'utf8')))).join('\n');
 export function core(extra = {}) {
-  const context = vm.createContext({ URL, Request, Headers, Response, Blob, TextEncoder, TextDecoder,
+  const context = vm.createContext({ URL, Request, Headers, Response, Blob, ReadableStream, TextEncoder, TextDecoder,
     AbortController, DOMException, crypto: webcrypto, structuredClone, console, setTimeout, clearTimeout, ...extra });
   return vm.runInContext(`${source}\n({ Config, Safety, Protocol, Endpoints, Authentication, Transfer, AttachmentFiles, JobController })`, context);
 }
 export function plain(value) { return JSON.parse(JSON.stringify(value)); }
-export async function until(predicate, message = 'Condition did not become true') {
-  for (let index = 0; index < 200; index++) { if (predicate()) return; await delay(5); }
+export async function until(predicate, message = 'Condition did not become true', attempts = 200) {
+  for (let index = 0; index < attempts; index++) { if (predicate()) return; await delay(5); }
   throw new Error(message);
 }
 export function json(value, status = 200, headers = {}) {

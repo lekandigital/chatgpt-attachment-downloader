@@ -1,14 +1,15 @@
 const JobController = (() => {
-  function create({ auth, fetcher, href, title, emit, save, wait = Transfer.sleep }) {
+  function create({ auth, fetcher, href, title, emit, save, saveLink = () => { throw new Transfer.Fault('NETWORK'); }, wait = Transfer.sleep }) {
     const instanceId = crypto.randomUUID();
     let operation = null;
+    let publishedAt = 0;
     let restored = new Map();
     let state = initial();
     function initial() {
       return { instanceId, conversationId: Safety.conversation(href()), title: Safety.text(title(), 120), revision: 0,
-        auth: auth.status(), scan: { status: 'idle', fresh: false, lastScannedAt: null, partial: false }, files: [],
+        auth: auth.status(), scan: { status: 'idle', fresh: false, lastScannedAt: null, partial: false, shape: [] }, files: [],
         batch: { status: 'idle', total: 0, completed: 0, successful: 0, failed: 0, startedAt: null, stoppedAt: null },
-        activeId: null, retryAt: null, waiting: null, largeFile: false, error: null, logs: [] };
+        activeId: null, activeBytes: null, retryAt: null, waiting: null, largeFile: false, error: null, logs: [] };
     }
     function log(code, error = null) {
       state.logs.push({ at: Date.now(), code, error: error ? Safety.error(error) : null });
@@ -18,7 +19,12 @@ const JobController = (() => {
       state.auth = auth.status();
       state.title = Safety.text(title(), 120);
       state.revision++;
+      publishedAt = Date.now();
       emit(Safety.state(state));
+    }
+    function publishProgress() {
+      // Byte counters change constantly; the bridge and storage only need a few updates a second.
+      if (Date.now() - publishedAt >= Config.PROGRESS_PUBLISH_MS) publish();
     }
     function current(op) {
       return operation === op && op.conversationId === state.conversationId && op.conversationId === Safety.conversation(href());
@@ -34,7 +40,7 @@ const JobController = (() => {
       if (item && item.status !== 'downloaded') { item.status = 'stopped'; item.error = null; }
       if (operation.kind === 'scan') state.scan.status = 'stopped';
       else { state.batch.status = 'stopped'; state.batch.stoppedAt = Date.now(); }
-      state.retryAt = null; state.waiting = null;
+      state.retryAt = null; state.waiting = null; state.activeBytes = null;
       log('STOPPED'); publish();
     }
     function navigate() {
@@ -72,15 +78,23 @@ const JobController = (() => {
         },
       });
     }
-    function recordError(error) {
-      const clean = error instanceof Transfer.Fault ? Safety.error(error) : { code: 'UNEXPECTED' };
-      if (clean.code === 'UNEXPECTED') console.error('[ChatGPT Attachment Downloader]', 'UNEXPECTED');
-      state.error = clean; log('ERROR', clean);
+    function unexpected(error) {
+      // Name and message only, passed through the redacting sanitizer; never objects, headers or URLs.
+      console.error('[ChatGPT Attachment Downloader]', Safety.text(`${error?.name || 'Error'}: ${error?.message || ''}`));
+      return { code: 'UNEXPECTED' };
+    }
+    function recordError(error, perFile = false) {
+      const clean = error instanceof Transfer.Fault ? Safety.error(error) : unexpected(error);
+      // A single file's failure is shown on its row; the banner is for problems that stop the job.
+      if (!perFile || ['AUTH_EXPIRED', 'AUTH_WAITING'].includes(clean.code)) state.error = clean;
+      log('ERROR', clean);
       return clean;
     }
     async function scan(op) {
       try {
-        const result = await AttachmentFiles.scan(clientFor(op), op.conversationId, op.abort.signal);
+        const result = await AttachmentFiles.scan(clientFor(op), op.conversationId, op.abort.signal, shape => {
+          if (current(op)) state.scan.shape = shape;
+        });
         guard(op);
         const history = new Map([...restored, ...state.files.map(file => [file.id, file])]);
         state.files = result.files.map(file => {
@@ -90,7 +104,7 @@ const JobController = (() => {
           return { ...file, status, actualSize: previous.actualSize, verified: previous.verified,
             attempts: previous.attempts, error: previous.error, completedAt: previous.completedAt };
         });
-        state.scan = { status: 'completed', fresh: true, lastScannedAt: Date.now(), partial: result.partial };
+        state.scan = { status: 'completed', fresh: true, lastScannedAt: Date.now(), partial: result.partial, shape: state.scan.shape };
         state.batch = { status: 'idle', total: 0, completed: 0, successful: 0, failed: 0, startedAt: null, stoppedAt: null };
         log('SCAN_DONE');
       } catch (error) {
@@ -118,12 +132,14 @@ const JobController = (() => {
         for (let index = 0; index < queue.length; index++) {
           guard(op);
           const file = queue[index];
-          state.activeId = file.id; file.status = 'resolving'; file.error = null;
+          state.activeId = file.id; state.activeBytes = null; file.status = 'resolving'; file.error = null;
           state.largeFile = (file.expectedSize || 0) > Config.LARGE_FILE_BYTES;
           publish();
           try {
-            const result = await AttachmentFiles.resolve(clientFor(op, file), op.conversationId, file, op.abort.signal, progress => {
+            const result = await AttachmentFiles.resolve(clientFor(op, file), op.conversationId, file, op.abort.signal, (progress, bytes) => {
               if (!current(op) || op.abort.signal.aborted) return;
+              if (progress === 'bytes') { state.activeBytes = bytes; publishProgress(); return; }
+              if (progress === 'resolving') state.activeBytes = null;
               if (progress === 'metadata') log('METADATA');
               else if (progress === 'size_retry') log('SIZE_RETRY');
               else if (progress === 'large') state.largeFile = true;
@@ -133,7 +149,8 @@ const JobController = (() => {
             guard(op);
             const outputName = uniqueName(result.filename);
             // No await between the final navigation/abort check and the anchor click.
-            save(result.blob, outputName);
+            if (result.link) saveLink(result.link, outputName); else save(result.blob, outputName);
+            file.delivery = result.link ? 'link' : null;
             file.filename = outputName;
             file.expectedSize = result.expectedSize;
             file.actualSize = result.actualSize;
@@ -142,11 +159,11 @@ const JobController = (() => {
             file.status = 'downloaded';
             file.completedAt = Date.now();
             state.batch.successful++;
-            log('FILE_SAVED');
+            log(result.link ? 'LINK_SAVED' : 'FILE_SAVED');
           } catch (error) {
             if (!current(op)) return;
             if (op.abort.signal.aborted) { file.status = 'stopped'; file.error = null; throw new Transfer.Fault('STOPPED'); }
-            const clean = recordError(error);
+            const clean = recordError(error, true);
             file.error = clean;
             if (clean.code === 'AUTH_EXPIRED' || clean.code === 'AUTH_WAITING') {
               file.status = 'stopped'; state.batch.status = 'paused';
@@ -155,7 +172,7 @@ const JobController = (() => {
             file.status = 'failed'; state.batch.failed++;
           }
           state.batch.completed++;
-          state.activeId = null;
+          state.activeId = null; state.activeBytes = null;
           publish();
           if (index < queue.length - 1) await wait(Config.FILE_DELAY_MS, op.abort.signal);
         }
@@ -166,7 +183,7 @@ const JobController = (() => {
         else { recordError(error); state.batch.status = 'paused'; }
       } finally {
         if (current(op)) {
-          operation = null; state.activeId = null; state.retryAt = null; state.waiting = null;
+          operation = null; state.activeId = null; state.activeBytes = null; state.retryAt = null; state.waiting = null;
           state.batch.stoppedAt = Date.now(); publish();
         }
       }
@@ -189,7 +206,7 @@ const JobController = (() => {
         }
         if (cmd.type === 'SCAN_FILES') {
           const op = begin('scan');
-          state.scan.status = 'scanning'; state.scan.fresh = false;
+          state.scan.status = 'scanning'; state.scan.fresh = false; state.scan.shape = [];
           log('SCAN_START'); publish();
           void scan(op);
           return { ok: true, state: Safety.state(state) };
@@ -209,7 +226,7 @@ const JobController = (() => {
         void batch(op, queue);
         return { ok: true, state: Safety.state(state) };
       } catch (error) {
-        const clean = error instanceof Transfer.Fault ? Safety.error(error) : { code: 'UNEXPECTED' };
+        const clean = error instanceof Transfer.Fault ? Safety.error(error) : unexpected(error);
         return { ok: false, error: clean, state: Safety.state(state) };
       }
     }

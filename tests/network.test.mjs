@@ -42,7 +42,7 @@ test('token refresh updates future requests; late 401 cannot erase new credentia
   auth.invalidate(auth.get().version); assert.equal(auth.status().detected, false);
   assert.throws(() => auth.get(), { code: 'AUTH_EXPIRED' });
 });
-test('external storage receives no account headers, credentials or referrer; redirects fail closed', async () => {
+test('external storage receives no account headers, credentials or referrer; ChatGPT redirects are detected manually', async () => {
   const modules = core(); const auth = authenticated(modules); const calls = [];
   auth.observe('/backend-api/me', { headers: { Authorization: 'Bearer private', 'oai-device-id': 'private', 'oai-account-id': 'private',
     'content-type': 'application/json', 'x-oai-turn-trace-id': 'trace', traceparent: 'trace', cookie: 'never-replay' } });
@@ -52,7 +52,37 @@ test('external storage receives no account headers, credentials or referrer; red
   assert.equal(calls[0].headers.get('authorization'), 'Bearer private');
   for (const name of ['content-type', 'x-oai-turn-trace-id', 'traceparent', 'cookie']) assert.equal(calls[0].headers.has(name), false);
   assert.deepEqual([...calls[1].headers], []); assert.equal(calls[1].credentials, 'omit');
-  assert.equal(calls[1].referrerPolicy, 'no-referrer'); assert.equal(calls[0].redirect, 'error'); assert.equal(calls[1].redirect, 'error');
+  assert.equal(calls[1].referrerPolicy, 'no-referrer'); assert.equal(calls[0].redirect, 'manual'); assert.equal(calls[1].redirect, 'follow');
+});
+test('a ChatGPT HTTP redirect is followed with the bearer header only and its destination is checked', async () => {
+  const modules = core(); const auth = authenticated(modules); const calls = [];
+  const opaque = { type: 'opaqueredirect', status: 0, ok: false, redirected: false, headers: new Headers(), body: null };
+  const landed = url => Object.defineProperties(new Response('%PDF-1.7 bytes'), { redirected: { value: true }, url: { value: url } });
+  let destination = 'https://files.oaiusercontent.com/file?sig=SIGNED';
+  const client = modules.Transfer.create({ auth, guard() {}, fetcher: async (url, init) => {
+    calls.push(init); return calls.length % 2 ? opaque : landed(destination);
+  } });
+  assert.equal(await client.request('https://chatgpt.com/backend-api/files/download/file_a', new AbortController().signal, r => r.text()), '%PDF-1.7 bytes');
+  assert.deepEqual([...calls[1].headers], [['authorization', 'Bearer TEST_ONLY_NOT_REAL']]);
+  assert.equal(calls[1].redirect, 'follow'); assert.equal(calls[1].credentials, 'same-origin');
+  destination = 'https://evil.example/collect';
+  await assert.rejects(client.request('https://chatgpt.com/backend-api/files/download/file_a', new AbortController().signal, r => r.text()), { code: 'UNSAFE_URL' });
+});
+test('only a direct ChatGPT 401 expires authentication', async () => {
+  const modules = core(); const auth = authenticated(modules);
+  const opaque = { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers(), body: null };
+  let calls = 0;
+  const followed = modules.Transfer.create({ auth, guard() {}, fetcher: async () => ++calls === 1 ? opaque : new Response('', { status: 401 }) });
+  await assert.rejects(followed.request('https://chatgpt.com/backend-api/x', new AbortController().signal, r => r.text()), { code: 'HTTP_OTHER' });
+  const storage = modules.Transfer.create({ auth, guard() {}, fetcher: async () => new Response('', { status: 401 }) });
+  await assert.rejects(storage.request('https://files.oaiusercontent.com/x', new AbortController().signal, r => r.text()), { code: 'HTTP_OTHER' });
+  assert.equal(auth.status().detected, true);
+});
+test('repeated authenticated page requests announce readiness once', () => {
+  const { Authentication } = core(); let changes = 0;
+  const auth = Authentication.create(() => changes++);
+  for (let i = 0; i < 25; i++) auth.observe('https://chatgpt.com/backend-api/conversation', { headers: { Authorization: `Bearer ${i}` } });
+  assert.equal(changes, 1); assert.equal(auth.get().headers.get('authorization'), 'Bearer 24');
 });
 test('unsafe URLs reject localhost, wrong origins, embedded credentials and unsupported schemes', () => {
   const { Endpoints } = core();
@@ -96,7 +126,7 @@ test('5xx and network retries are bounded', async () => {
     assert.equal(calls, expected);
   }
 });
-test('stop aborts a fetch; timeouts cover body consumption', async () => {
+test('stop aborts a fetch; a stalled body times out but steady progress does not', async () => {
   const modules = core(); const abort = new AbortController(); let received;
   const client = modules.Transfer.create({ auth: authenticated(modules), guard() {}, fetcher: (url, init) => {
     received = init.signal;
@@ -105,15 +135,23 @@ test('stop aborts a fetch; timeouts cover body consumption', async () => {
   const task = client.request('https://chatgpt.com/backend-api/x', abort.signal, r => r.text());
   abort.abort(); await assert.rejects(task, { code: 'STOPPED' }); assert.equal(received.aborted, true);
   let calls = 0;
-  const timed = modules.Transfer.create({ auth: authenticated(modules), guard() {}, timeoutMs: 5, wait: async () => {},
+  const timed = modules.Transfer.create({ auth: authenticated(modules), guard() {}, stallMs: 5, wait: async () => {},
     fetcher: async () => { calls++; return new Response('x'); } });
   await assert.rejects(timed.request('https://chatgpt.com/backend-api/x', new AbortController().signal,
     (response, signal) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))), { code: 'TIMEOUT' });
   assert.equal(calls, 3);
+  // 60 ms of transfer under a 20 ms stall limit succeeds while bytes keep arriving.
+  const steady = modules.Transfer.create({ auth: authenticated(modules), guard() {}, stallMs: 20, fetcher: async () => new Response('x') });
+  const result = await steady.request('https://chatgpt.com/backend-api/x', new AbortController().signal, async (response, signal, touch) => {
+    for (let i = 0; i < 6; i++) { await new Promise(r => setTimeout(r, 10)); touch(); }
+    if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+    return 'complete';
+  });
+  assert.equal(result, 'complete');
 });
 test('projection and diagnostics cannot serialize header maps, signed URLs, JWTs or raw errors', () => {
   const { Safety, Protocol } = core();
-  const clean = Safety.state({ conversationId: 'A', title: 'Authorization Bearer PRIVATE', authorization: 'PRIVATE',
+  const clean = Safety.state({ conversationId: 'A', title: 'Chat eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3.PRIVATEsignature', authorization: 'PRIVATE',
     auth: { detected: true, headers: { Authorization: 'Bearer PRIVATE' } },
     files: [{ id: 'file_a', filename: 'secret-document.pdf', signedURL: 'https://files.oaiusercontent.com/?sig=PRIVATE',
       status: 'failed', error: { code: 'NETWORK', message: 'PRIVATE', headers: 'PRIVATE' } }],
@@ -122,6 +160,9 @@ test('projection and diagnostics cannot serialize header maps, signed URLs, JWTs
   assert.ok(!serialized.includes('PRIVATE')); assert.ok(!serialized.includes('https://')); assert.ok(!serialized.includes('headers'));
   assert.equal(Safety.text('abcdefghijkl.abcdefghijkl.abcdefgh'), '[redacted]');
   assert.equal(Safety.text('me@example.com'), '[email removed]');
+  // Titles are the user's own display data: only token-shaped strings are removed.
+  assert.equal(Safety.state({ conversationId: 'A', title: 'Session planning' }).title, 'Session planning');
+  assert.deepEqual(Safety.shape(['files:array(2)', 'name:me@example.com', 'files[0].id:string', 'x:https://e.x/?sig=1']), ['files:array(2)', 'files[0].id:string']);
   assert.equal(Protocol.command({ type: 'FETCH_ANY_URL', url: 'https://evil.example' }), null);
   assert.deepEqual(plain(Protocol.command({ type: 'SCAN_FILES', conversationId: 'A', headers: 'PRIVATE' })), { type: 'SCAN_FILES', conversationId: 'A' });
 });

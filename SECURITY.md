@@ -16,9 +16,13 @@ Only current-conversation list and current-scan file IDs are accepted. Selected 
 
 Signed metadata URLs are parsed inside MAIN, validated against HTTPS, credential-free URLs, same-origin backend paths or recognized file-storage hosts, then fetched with origin-appropriate headers. External requests use empty captured headers, `credentials: omit`, and `referrerPolicy: no-referrer`.
 
-All HTTP redirects use `redirect: error`. Unlike Authorization, custom account headers may not be automatically removed on a cross-origin redirect; this version refuses that ambiguity. Metadata URL hops are followed explicitly and capped at four. Unknown hosts fail closed. A new delivery host or an HTTP-redirect-only route may therefore require an update.
+ChatGPT requests use `redirect: manual`, so an HTTP redirect is detected without forwarding anything. It is then followed once with a request carrying **only** the bearer header, `credentials: same-origin` and `referrerPolicy: no-referrer`; the Fetch standard requires browsers to drop Authorization when a redirect changes origin, and the final `response.url` must pass the same allowlist (otherwise the body is discarded unread). This was checked in Chromium 151 against a local TLS stand-in for the storage host: the redirected request carried no Authorization, `oai-device-id`, cookie or referrer. The same experiment confirmed why custom headers are never auto-followed: with the full header set, Chrome removed Authorization but forwarded `oai-device-id` to the storage host. A 401 after such a redirect, or from a storage host, fails only that file and never invalidates the page credential.
 
-The page’s CSP and CORS apply to MAIN fetches. The extension does not bypass them. No broad host permissions or background-fetch fallback are used.
+Storage requests use `redirect: follow` (they carry no captured headers or cookies), and their final URL is checked the same way. Metadata URL hops are followed explicitly and capped at four. Unknown hosts fail closed.
+
+If an allowlisted storage host refuses the page fetch (CORS) and its signed link forces `Content-Disposition: attachment`, MAIN clicks an anchor to that link (`rel="noopener noreferrer"`) so Chrome downloads it without page CORS. The link never leaves MAIN; the file is recorded as delivered by link and unverified. Links without the forced-attachment parameter are never clicked, because a viewable response could navigate the ChatGPT tab away.
+
+The page’s CSP and CORS apply to MAIN fetches. The extension does not bypass them; the link fallback above is an ordinary browser download. No broad host permissions or background-fetch fallback are used.
 
 ## Message boundaries
 
@@ -34,11 +38,11 @@ Other extensions that already intercept page fetches can see the requests they a
 
 The worker applies `Safety.state` / `Safety.history` before every write and serializes writes to avoid stale completion regressions. Values are plain JSON records; no Blob, Request, Headers, AbortController, signed link, or credential is stored. Storage is local, not sync. Previous downloaded records are preserved across tabs; current UI state still reflects each live job.
 
-Credential-like strings, JWT shapes, URLs, email addresses, control characters, and bidi controls are removed or redacted at display/storage boundaries. The only extension console error is the literal category `UNEXPECTED`, with no raw Error object. Diagnostics contain no filenames or identifiers.
+Attachment filenames and conversation titles are the user’s own data: they are made filesystem/display safe (control and bidi characters removed, JWT-shaped strings redacted from titles) but not keyword-redacted, because names such as `session-notes.txt` must download under their real names. The only extension console output is an unexpected error’s name and message passed through `Safety.text`, which removes URLs, JWT shapes and email addresses and replaces anything mentioning bearer/authorization/token/secret/cookie/session/password/api-key with `[redacted]`. Diagnostics contain no filenames or identifiers; `listResponseShape` holds only key names and value types of the list response, filtered to a strict `key:type` pattern.
 
 ## Download limits
 
-All HTML and empty responses are rejected, including genuine HTML and empty attachments. A JSON object with a top-level `download_url` is treated as reserved download metadata; invalid destinations are rejected rather than saved as a disguised attachment. Other JSON and JSONL files are unchanged.
+HTML and empty responses are rejected, except a `.html`/`.htm` attachment or an empty file whose byte count exactly matches the size in ChatGPT’s download metadata. A JSON object with a top-level `download_url` is treated as download metadata unless its length matches that announced size; invalid destinations are rejected rather than saved as a disguised attachment. JSON error envelopes are rejected for non-JSON attachments. Other JSON and JSONL files are unchanged.
 
 Successful status means bytes passed validation and a Blob anchor was clicked. It is not proof of disk completion. Chrome can still block multiple downloads, cancel a prompt, or encounter disk errors. Existing downloads can only be managed in Chrome’s own Downloads UI.
 

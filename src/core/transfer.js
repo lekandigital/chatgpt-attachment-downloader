@@ -29,7 +29,7 @@ const Transfer = (() => {
     aborted(signal);
   }
   function create({ fetcher, auth, guard, onWait = () => {}, onRequest = () => {}, wait = sleep,
-    timeoutMs = Config.REQUEST_TIMEOUT_MS }) {
+    stallMs = Config.STALL_TIMEOUT_MS }) {
     async function request(value, signal, consume) {
       const url = Endpoints.safeDownload(value);
       const internal = url.origin === Config.ORIGIN;
@@ -41,20 +41,45 @@ const Transfer = (() => {
         const cancel = () => controller.abort();
         signal.addEventListener('abort', cancel, { once: true });
         let timedOut = false;
-        const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+        let timer = null;
+        // Restarted whenever response bytes arrive, so only a stalled transfer times out.
+        const touch = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => { timedOut = true; controller.abort(); }, stallMs);
+        };
+        touch();
         let retry = null;
         try {
           onRequest();
-          const response = await fetcher(url.href, {
-            method: 'GET', headers: context.headers, credentials: internal ? 'include' : 'omit',
-            cache: 'no-store', referrerPolicy: 'no-referrer',
-            // Auto-following an HTTP redirect could leak custom account headers across origins.
-            // Metadata redirects below are followed explicitly with freshly scoped headers.
-            redirect: 'error', signal: controller.signal,
+          let followed = false;
+          let response = await fetcher(url.href, internal ? {
+            method: 'GET', headers: context.headers, credentials: 'include', cache: 'no-store',
+            // Auto-following could forward account headers to another origin, so an HTTP
+            // redirect is only detected here and then followed with the bearer header alone.
+            redirect: 'manual', signal: controller.signal,
+          } : {
+            // Signed storage links carry their own authorization: no headers, cookies or referrer.
+            method: 'GET', headers: context.headers, credentials: 'omit', cache: 'no-store',
+            referrerPolicy: 'no-referrer', redirect: 'follow', signal: controller.signal,
           });
+          if (internal && response.type === 'opaqueredirect') {
+            // Browsers strip Authorization when a redirect leaves chatgpt.com; nothing else is sent.
+            followed = true;
+            response = await fetcher(url.href, {
+              method: 'GET', headers: new Headers({ authorization: context.headers.get('authorization') }),
+              credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'follow', signal: controller.signal,
+            });
+          }
           aborted(signal); guard();
+          if (response.redirected) {
+            try { Endpoints.safeDownload(response.url); }
+            catch (error) { await response.body?.cancel().catch(() => {}); throw error; }
+          }
           if (response.status === 401) {
-            if (internal) auth.invalidate(context.version);
+            // Only a direct ChatGPT 401 means the page credential expired. Storage hosts and
+            // bearer-only redirect follow-ups fail just this file.
+            if (!internal || followed) throw new Fault('HTTP_OTHER');
+            auth.invalidate(context.version);
             throw new Fault('AUTH_EXPIRED');
           }
           if (response.status === 403) throw new Fault('HTTP_403');
@@ -67,7 +92,7 @@ const Transfer = (() => {
             retry = { kind: 'retry', ms: 2000 * 2 ** serverRetries++ };
           } else if (!response.ok) throw new Fault('HTTP_OTHER');
           if (!retry) {
-            const result = await consume(response, controller.signal);
+            const result = await consume(response, controller.signal, touch);
             aborted(signal); guard();
             return result;
           }

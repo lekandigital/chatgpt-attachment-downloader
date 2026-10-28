@@ -6,6 +6,7 @@ if (!globalThis[CONTENT_MARKER]) {
   let restoreConversation = null;
   let restoreTask = Promise.resolve();
   let persistTimer = null;
+  let latestUnsaved = null;
   let storageError = false;
   function request(command) {
     return new Promise(resolve => {
@@ -25,10 +26,12 @@ if (!globalThis[CONTENT_MARKER]) {
     } catch { storageError = true; }
   }
   function queuePersist(state) {
-    clearTimeout(persistTimer);
-    // Write completion/stop transitions promptly. Throttle intermediate progress updates.
+    latestUnsaved = state;
+    // Write completion/stop transitions promptly. During a batch, save at most every 2 s.
     const busy = state.batch.status === 'running' || state.scan.status === 'scanning';
-    persistTimer = setTimeout(() => { void persist(state); }, busy ? 250 : 0);
+    if (!busy) { clearTimeout(persistTimer); persistTimer = null; void persist(state); return; }
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => { persistTimer = null; void persist(latestUnsaved); }, 2000);
   }
   function restore(state) {
     if (state.conversationId === restoreConversation) return;

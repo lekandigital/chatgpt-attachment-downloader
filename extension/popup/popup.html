@@ -10,7 +10,7 @@
   <header>
     <div class="app-icon" aria-hidden="true">↓</div>
     <div><h1>ChatGPT Attachment<br>Downloader</h1><p class="eyebrow">Your files. One place.</p></div>
-    <span class="version">v1.0</span>
+    <span id="version" class="version"></span>
   </header>
   <main>
     <section class="context" aria-label="Current conversation">
@@ -21,7 +21,7 @@
     <p id="connection-note" class="note" role="status"></p>
     <button id="reload" class="secondary full" hidden>Reload page to capture authentication</button>
     <section id="notice" class="notice" hidden>
-      <p>Chrome may ask to allow multiple downloads. Choose <strong>Allow</strong> to continue the batch.</p>
+      <p>Chrome may ask whether this site can download multiple files. Choose <strong>Allow</strong> to continue the batch.</p>
       <button id="acknowledge" class="text-button">Got it</button>
     </section>
     <div class="actions primary-actions">
@@ -43,6 +43,14 @@
       <div class="list-heading"><h2>Attachments <span id="file-count"></span></h2><span id="selected-count" class="muted"></span></div>
       <label class="sr-only" for="search">Filter attachments by filename</label>
       <input id="search" type="search" placeholder="Find a file…" autocomplete="off">
+      <div id="type-filters" class="type-filters" role="group" aria-label="Filter by file type">
+        <button class="chip" data-type="all" aria-pressed="true">All</button>
+        <button class="chip" data-type="pdf" aria-pressed="false">PDF</button>
+        <button class="chip" data-type="image" aria-pressed="false">Images</button>
+        <button class="chip" data-type="document" aria-pressed="false">Documents</button>
+        <button class="chip" data-type="text" aria-pressed="false">Text</button>
+        <button class="chip" data-type="other" aria-pressed="false">Other</button>
+      </div>
       <div class="selection-actions">
         <button id="select-all" class="text-button">Select all</button>
         <button id="select-none" class="text-button">Select none</button>
@@ -59,7 +67,7 @@
       <summary>Details &amp; privacy</summary>
       <p class="muted">Credentials stay in page memory. No analytics or uploads. Filenames and progress are saved locally for the last eight conversations you scan.</p>
       <div id="log" class="log" aria-label="Diagnostic log"></div>
-      <div class="actions"><button id="export" class="secondary">Export diagnostics</button><button id="forget" class="secondary">Forget saved history</button></div>
+      <div class="actions"><button id="export-list" class="secondary">Export file list</button><button id="export" class="secondary">Export diagnostics</button><button id="forget" class="secondary">Forget history</button></div>
       <p id="privacy-result" class="muted" role="status"></p>
     </details>
   </main>

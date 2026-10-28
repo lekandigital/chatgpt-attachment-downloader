@@ -111,3 +111,83 @@ test('empty lists work; unexpected API objects are reported', async () => {
   assert.equal((await AttachmentFiles.scan(response({ files: [] }), 'A', new AbortController().signal)).files.length, 0);
   await assert.rejects(AttachmentFiles.scan(response({ error: 'changed' }), 'A', new AbortController().signal), { code: 'API_CHANGED' });
 });
+test('ordinary words and emails in attachment names are kept, not redacted', () => {
+  const { Safety } = core();
+  for (const name of ['session-notes.txt', 'Tokenizer design.md', 'cookie-policy.pdf', 'lekan@example.com resume.pdf', 'password-reset-flow.png']) {
+    assert.equal(Safety.filename(name), name);
+  }
+  assert.equal(Safety.filename('invoice‮fdp.exe'), 'invoicefdp.exe');
+});
+function metadataClient(first, second, calls = []) {
+  return { request: async (url, signal, consume) => { calls.push(url); return consume(calls.length === 1 ? first : second()); } };
+}
+test('a list size that differs from the bytes does not fail the file; only metadata size verifies', async () => {
+  const { AttachmentFiles, Safety } = core();
+  const file = Safety.file({ id: 'file_a', filename: 'a.txt', expectedSize: 999 });
+  const result = await AttachmentFiles.resolve({ request: (url, signal, consume) => consume(new Response('abc')) }, 'A', file, new AbortController().signal);
+  assert.equal(result.actualSize, 3); assert.equal(result.verified, false);
+});
+test('a genuine .html attachment is accepted only when metadata size matches; an app shell never is', async () => {
+  const { AttachmentFiles, Safety } = core();
+  const page = '<!DOCTYPE html><html><body>my exported page</body></html>';
+  const html = () => new Response(page, { headers: { 'content-type': 'text/html' } });
+  const ok = await AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x', file_size_bytes: page.length }), html),
+    'A', Safety.file({ id: 'file_a', filename: 'report.html' }), new AbortController().signal);
+  assert.equal(await ok.blob.text(), page); assert.equal(ok.verified, true);
+  await assert.rejects(AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x', file_size_bytes: page.length + 5 }), html),
+    'A', Safety.file({ id: 'file_a', filename: 'report.html' }), new AbortController().signal), { code: 'HTML_RESPONSE' });
+  await assert.rejects(AttachmentFiles.resolve(metadataClient(html(), html), 'A', Safety.file({ id: 'file_a', filename: 'report.html' }), new AbortController().signal), { code: 'HTML_RESPONSE' });
+  await assert.rejects(AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x', file_size_bytes: page.length }), html),
+    'A', Safety.file({ id: 'file_a', filename: 'deck.pdf' }), new AbortController().signal), { code: 'HTML_RESPONSE' });
+});
+test('a JSON attachment that itself contains download_url is kept when its size matches the metadata', async () => {
+  const { AttachmentFiles, Safety } = core();
+  const body = JSON.stringify({ download_url: 'https://example.org/release.zip', note: 'user data' });
+  const result = await AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x', file_size_bytes: body.length }),
+    () => json(JSON.parse(body))), 'A', Safety.file({ id: 'file_a', filename: 'release.json' }), new AbortController().signal);
+  assert.equal(await result.blob.text(), body);
+});
+test('a JSON error envelope is not saved as a .txt or .csv; a .json attachment with an error key is kept', async () => {
+  const { AttachmentFiles } = core();
+  for (const body of [{ detail: 'Not found' }, { status: 'error', message: 'expired' }, { error: { code: 'x' } }]) {
+    await assert.rejects(AttachmentFiles.inspect(json(body), { filename: 'data.csv' }), { code: 'SERVER_ERROR' });
+  }
+  const kept = await AttachmentFiles.inspect(json({ error: 'logged by my app' }), { filename: 'app-log.json' });
+  assert.equal(await kept.blob.text(), '{"error":"logged by my app"}');
+});
+test('a zero-byte file is accepted only when metadata says the file is empty', async () => {
+  const { AttachmentFiles, Safety } = core();
+  const empty = await AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x', file_size_bytes: 0 }), () => new Response('')),
+    'A', Safety.file({ id: 'file_a', filename: 'empty.txt' }), new AbortController().signal);
+  assert.equal(empty.actualSize, 0);
+  await assert.rejects(AttachmentFiles.resolve(metadataClient(json({ download_url: '/backend-api/estuary/content?id=x' }), () => new Response('')),
+    'A', Safety.file({ id: 'file_a', filename: 'empty.txt' }), new AbortController().signal), { code: 'EMPTY_RESPONSE' });
+});
+test('magic checks fail text posing as a binary type but allow other binary content', async () => {
+  const { AttachmentFiles } = core();
+  await AttachmentFiles.checkMagic(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46])]), 'photo.png');
+  await assert.rejects(AttachmentFiles.checkMagic(new Blob(['Not Found']), 'photo.png'), { code: 'MAGIC_MISMATCH' });
+});
+test('a storage link refused by CORS falls back to a Chrome download only when it forces attachment', async () => {
+  const { AttachmentFiles, Safety, Transfer } = core();
+  const forced = 'https://files.oaiusercontent.com/f?rscd=attachment%3B%20filename%3Ddeck.pdf&sig=SIGNED';
+  for (const [link, expectLink] of [[forced, true], ['https://files.oaiusercontent.com/f?sig=SIGNED', false]]) {
+    let calls = 0;
+    const client = { request: async (url, signal, consume) => {
+      if (++calls === 1) return consume(json({ download_url: link, file_name: 'deck.pdf', file_size_bytes: 10 }));
+      throw new Transfer.Fault('NETWORK');
+    } };
+    const task = AttachmentFiles.resolve(client, 'A', Safety.file({ id: 'file_a', filename: 'deck.pdf' }), new AbortController().signal);
+    if (expectLink) { const result = await task; assert.equal(result.link, forced); assert.equal(result.verified, false); }
+    else await assert.rejects(task, { code: 'NETWORK' });
+  }
+});
+test('response bodies stream with byte progress and the list shape records keys and types only', async () => {
+  const { AttachmentFiles } = core();
+  const seen = [];
+  const stream = new ReadableStream({ start(controller) { for (const part of ['ab', 'cd', 'ef']) controller.enqueue(new TextEncoder().encode(part)); controller.close(); } });
+  const result = await AttachmentFiles.inspect(new Response(stream), { filename: 'a.txt', onBytes: bytes => seen.push(bytes) });
+  assert.equal(await result.blob.text(), 'abcdef'); assert.deepEqual(seen, [2, 4, 6]);
+  const shape = AttachmentFiles.describe({ items: [{ id: 'file_PRIVATE', name: 'secret.pdf', size: 9 }], cursor: null });
+  assert.deepEqual(plain(shape), ['(root):object', 'items:array(1)', 'items[0].id:string', 'items[0].name:string', 'items[0].size:number', 'cursor:null']);
+});

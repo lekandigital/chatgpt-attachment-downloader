@@ -35,7 +35,23 @@ const AttachmentFiles = (() => {
     return ['files', 'items', 'data', 'attachments', 'results'].some(key =>
       Array.isArray(data[key]) || (data[key] && typeof data[key] === 'object' && isListShape(data[key])));
   }
-  async function scan(client, conversationId, signal) {
+  function describe(data) {
+    // Key names and value types only — never values — so a schema change can be diagnosed safely.
+    const kind = value => Array.isArray(value) ? `array(${value.length})` : value === null ? 'null' : typeof value;
+    const shape = [`(root):${kind(data)}`];
+    if (!data || typeof data !== 'object') return shape;
+    const entries = Array.isArray(data) ? [['[0]', data[0]]] : Object.entries(data);
+    for (const [key, value] of entries.slice(0, 20)) {
+      shape.push(`${key}:${kind(value)}`);
+      const first = Array.isArray(value) ? value[0] : null;
+      if (first && typeof first === 'object' && !Array.isArray(first)) {
+        for (const nested of Object.keys(first).slice(0, 20)) shape.push(`${key}[0].${nested}:${kind(first[nested])}`);
+      }
+    }
+    return shape;
+  }
+  function extension(name) { return (name.match(/\.([A-Za-z0-9]{1,12})$/)?.[1] || '').toLowerCase(); }
+  async function scan(client, conversationId, signal, onShape = () => {}) {
     const all = new Map();
     const visitedPages = new Set();
     let page = null;
@@ -52,6 +68,7 @@ const AttachmentFiles = (() => {
           throw new Transfer.Fault('API_CHANGED');
         }
       });
+      if (index === 0) onShape(describe(data));
       const records = extract(data);
       if (!records.length && !isListShape(data)) throw new Transfer.Fault('API_CHANGED');
       let added = 0;
@@ -69,21 +86,55 @@ const AttachmentFiles = (() => {
     return /(?:text\/html|application\/xhtml\+xml)/i.test(mime) ||
       /^\s*(?:\uFEFF)?\s*(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)/i.test(prefix.replace(/^(?:\s*<!--[\s\S]*?-->)+/, ''));
   }
-  async function inspect(response) {
+  async function readBody(response, mime, touch, onBytes) {
+    if (!response.body) return response.blob();
+    const reader = response.body.getReader();
+    const parts = [];
+    let chunks = [], chunkBytes = 0, total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      touch?.();
+      total += value.byteLength; chunkBytes += value.byteLength; chunks.push(value);
+      onBytes?.(total);
+      // Fold chunks into Blob parts so large files sit in browser blob storage, not JS arrays.
+      if (chunkBytes >= 8 * 1024 * 1024) { parts.push(new Blob(chunks)); chunks = []; chunkBytes = 0; }
+    }
+    if (chunks.length) parts.push(new Blob(chunks));
+    return new Blob(parts, { type: mime });
+  }
+  const JSON_FILES = new Set(['json', 'jsonl', 'ndjson', 'geojson', 'har', 'ipynb']);
+  async function inspect(response, { filename = '', expectedSize = null, touch, onBytes } = {}) {
     const mime = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (html('', mime)) throw new Transfer.Fault('HTML_RESPONSE');
-    const blob = await response.blob();
-    if (!blob.size) throw new Transfer.Fault('EMPTY_RESPONSE');
+    const ext = extension(filename);
+    // A genuine .html attachment is accepted only when its bytes match the size ChatGPT announced.
+    // An app-shell page returned in place of a file can never satisfy that.
+    const htmlAttachment = (ext === 'html' || ext === 'htm') && expectedSize !== null;
+    if (html('', mime) && !htmlAttachment) {
+      await response.body?.cancel().catch(() => {});
+      throw new Transfer.Fault('HTML_RESPONSE');
+    }
+    const blob = await readBody(response, mime, touch, onBytes);
+    const sizeMatches = expectedSize !== null && blob.size === expectedSize;
+    if (!blob.size && !sizeMatches) throw new Transfer.Fault('EMPTY_RESPONSE');
     const prefix = await blob.slice(0, 1024).text();
-    if (html(prefix, mime)) throw new Transfer.Fault('HTML_RESPONSE');
+    if (html(prefix, mime) && !(htmlAttachment && sizeMatches)) throw new Transfer.Fault('HTML_RESPONSE');
+    // Bytes matching the announced size are the attachment itself, even when they are JSON.
+    if (sizeMatches) return { blob, mime };
     if (blob.size <= Config.MAX_METADATA_BYTES && (mime.includes('json') || /^\s*\{/.test(prefix))) {
       let parsed;
       try { parsed = JSON.parse(await blob.text()); } catch { /* A JSONL or ordinary text attachment. */ }
-      if (parsed && !Array.isArray(parsed) && typeof parsed === 'object' && Object.hasOwn(parsed, 'download_url')) {
+      const object = parsed && !Array.isArray(parsed) && typeof parsed === 'object';
+      if (object && Object.hasOwn(parsed, 'download_url')) {
         // Malformed metadata is an error, never a tiny JSON file saved as a PDF.
         const url = Endpoints.safeDownload(parsed.download_url);
         return { metadata: { url: url.href, filename: parsed.file_name,
           expectedSize: Safety.size(parsed.file_size_bytes) } };
+      }
+      // A JSON error envelope served in place of a .txt, .csv, .pdf… is not that file.
+      if (object && mime.includes('json') && !JSON_FILES.has(ext) && blob.size <= 65536 &&
+        (parsed.status === 'error' || Object.hasOwn(parsed, 'error') || Object.hasOwn(parsed, 'detail'))) {
+        throw new Transfer.Fault('SERVER_ERROR');
       }
     }
     return { blob, mime };
@@ -101,23 +152,36 @@ const AttachmentFiles = (() => {
       valid = begins([0x50, 0x4b, 0x03, 0x04]) || begins([0x50, 0x4b, 0x05, 0x06]) ||
         begins([0x50, 0x4b, 0x07, 0x08]) || (ext !== 'zip' && begins([0xd0, 0xcf, 0x11, 0xe0]));
     }
-    if (!valid) throw new Transfer.Fault('MAGIC_MISMATCH');
+    // The failures being guarded against are text (metadata JSON, an HTML page, an error message)
+    // saved under a binary name. Other binary content is still what ChatGPT served, so it passes.
+    if (!valid && !/[\x00-\x08\x0e-\x1f]/.test(String.fromCharCode(...bytes.subarray(0, 512)))) {
+      throw new Transfer.Fault('MAGIC_MISMATCH');
+    }
   }
   async function resolve(client, conversationId, file, signal, onProgress = () => {}) {
     for (let integrityAttempt = 0; integrityAttempt < 2; integrityAttempt++) {
       let url = Endpoints.download(conversationId, file.id);
       let filename = file.filename;
-      let expectedSize = file.expectedSize;
+      // Only file_size_bytes from download metadata is used for verification; list sizes are informational.
+      let expectedSize = null;
       let result;
       for (let hops = 0; ; hops++) {
         Transfer.aborted(signal);
         onProgress('resolving');
-        result = await client.request(url, signal, async response => {
-          onProgress('downloading');
-          const length = Number(response.headers.get('content-length'));
-          if (length > Config.LARGE_FILE_BYTES) onProgress('large');
-          return inspect(response);
-        });
+        try {
+          result = await client.request(url, signal, async (response, requestSignal, touch) => {
+            onProgress('downloading');
+            const length = Number(response.headers.get('content-length'));
+            if (length > Config.LARGE_FILE_BYTES) onProgress('large');
+            return inspect(response, { filename, expectedSize, touch, onBytes: bytes => onProgress('bytes', bytes) });
+          });
+        } catch (error) {
+          // The signed link stays inside MAIN; Chrome fetches it without page CORS rules.
+          if (hops > 0 && error?.code === 'NETWORK' && Endpoints.linkDownload(url)) {
+            return { link: url, filename, expectedSize: expectedSize ?? file.expectedSize, actualSize: null, mime: null, verified: false };
+          }
+          throw error;
+        }
         if (!result.metadata) break;
         if (hops >= Config.MAX_METADATA_HOPS) throw new Transfer.Fault('TOO_MANY_HOPS');
         onProgress('metadata');
@@ -131,11 +195,11 @@ const AttachmentFiles = (() => {
         if (!integrityAttempt) { onProgress('size_retry'); continue; }
         throw new Transfer.Fault('SIZE_MISMATCH', { expected: expectedSize, actual: result.blob.size });
       }
-      await checkMagic(result.blob, filename);
+      if (result.blob.size) await checkMagic(result.blob, filename);
       Transfer.aborted(signal);
-      return { blob: result.blob, filename, expectedSize, actualSize: result.blob.size,
+      return { blob: result.blob, filename, expectedSize: expectedSize ?? file.expectedSize, actualSize: result.blob.size,
         mime: result.mime, verified: expectedSize !== null };
     }
   }
-  return Object.freeze({ extract, isListShape, scan, inspect, resolve, html, checkMagic });
+  return Object.freeze({ extract, isListShape, describe, scan, inspect, resolve, html, checkMagic });
 })();

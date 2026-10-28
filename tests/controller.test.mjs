@@ -122,3 +122,28 @@ test('all emitted events and persisted history omit actual credentials and signe
   const serialized = JSON.stringify(h.events) + JSON.stringify(h.Safety.history(h.job.snapshot())) + JSON.stringify(h.Safety.diagnostics(h.job.snapshot()));
   for (const privateText of ['TEST_ONLY_NOT_REAL', 'TEST_DEVICE_PRIVATE', 'SIGNED_PRIVATE', 'authorization', 'Bearer', 'download_url']) assert.ok(!serialized.includes(privateText));
 });
+test('a CORS-refused storage link is handed to Chrome inside MAIN and marked unverified', async () => {
+  const links = [];
+  const forced = 'https://files.oaiusercontent.com/f?rscd=attachment%3B%20filename%3Dd.bin&sig=SIGNED_PRIVATE';
+  const h = jobHarness(route([{ id: 'file_a', name: 'd.bin' }], async url => {
+    if (url.startsWith('https://files.oaiusercontent.com/')) throw new TypeError('Failed to fetch');
+    return json({ download_url: forced, file_name: 'd.bin', file_size_bytes: 4 });
+  }), { saveLink: (url, filename) => links.push({ url, filename }) });
+  await h.scan(); h.command('START_DOWNLOADS'); await h.finish();
+  assert.equal(h.saves.length, 0); assert.deepEqual(links, [{ url: forced, filename: 'd.bin' }]);
+  const [file] = h.job.snapshot().files;
+  assert.equal(file.status, 'downloaded'); assert.equal(file.delivery, 'link'); assert.equal(file.verified, false);
+  assert.ok(!JSON.stringify(h.events).includes('SIGNED_PRIVATE'));
+});
+test('byte progress is published for the active file and cleared afterwards', async () => {
+  // Four chunks over ~600 ms: progress publishes are throttled, so a slow body is needed to see one.
+  const slow = () => new Response(new ReadableStream({ async pull(controller) {
+    await delay(150); controller.enqueue(new Uint8Array(1024));
+    if (++slow.sent === 4) controller.close();
+  } }));
+  slow.sent = 0;
+  const h = jobHarness(route([{ id: 'file_a', name: 'a.bin' }], async () => slow()));
+  await h.scan(); h.command('START_DOWNLOADS'); await until(() => h.job.snapshot().batch.status !== 'running', 'batch did not finish', 400);
+  assert.ok(h.events.some(event => event.activeBytes > 0 && event.activeBytes < 4096));
+  assert.equal(h.job.snapshot().activeBytes, null);
+});

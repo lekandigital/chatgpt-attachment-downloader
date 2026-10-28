@@ -31,6 +31,16 @@ const Endpoints = (() => {
     }
     return url;
   }
+  function linkDownload(value) {
+    // Last resort when a storage host refuses page fetches (CORS): let Chrome fetch the signed
+    // link itself. Allowed only when the link forces an attachment download, so the ChatGPT
+    // tab cannot be navigated away by a viewable response.
+    let url;
+    try { url = safeDownload(value); } catch { return false; }
+    if (url.origin === Config.ORIGIN) return false;
+    const disposition = url.searchParams.get('rscd') || url.searchParams.get('response-content-disposition') || '';
+    return /^\s*attachment\b/i.test(disposition);
+  }
   function nextPage(data, returned) {
     const candidates = [data, data?.pagination, data?.meta, data?.data, data?.data?.pagination].filter(v => v && typeof v === 'object');
     for (const value of candidates) {
@@ -46,5 +56,5 @@ const Endpoints = (() => {
     const signaled = candidates.some(v => v.has_more === true || v.has_next_page === true || v.next || v.next_page || v.next_cursor);
     return { page: null, partial: !!signaled || returned >= Config.FILE_LIST_LIMIT };
   }
-  return Object.freeze({ list, download, safeDownload, nextPage });
+  return Object.freeze({ list, download, safeDownload, linkDownload, nextPage });
 })();

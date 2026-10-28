@@ -1,6 +1,6 @@
 # ChatGPT Attachment Downloader
 
-A personal, unpacked Chrome extension for downloading attachments from **the ChatGPT conversation you currently have open**. It scans on demand and downloads one file at a time, with a 1.5-second pause between files. Version 1.0.0. Not affiliated with or endorsed by OpenAI.
+A personal, unpacked Chrome extension for downloading attachments from **the ChatGPT conversation you currently have open**. It scans on demand and downloads one file at a time, with a 1.5-second pause between files. Version 1.0.1 (see `CHANGELOG.md`). Not affiliated with or endorsed by OpenAI.
 
 ## Install — no coding or build step needed
 
@@ -19,13 +19,13 @@ Chrome 111 or newer is required. Only `https://chatgpt.com/*` is supported. Chro
 1. Open a conversation at `https://chatgpt.com/c/...` (project and custom-GPT conversation paths containing `/c/` also work).
 2. Click the extension. Wait for **Auth ready**.
 3. Click **Scan attachments** and review the list.
-4. Acknowledge the one-time notice about Chrome allowing multiple downloads.
-5. Click **Download all**, or check specific files and click **Download selected**.
+4. Click **Download all**, or check specific files and click **Download selected**. (Starting the first batch dismisses the one-time notice about Chrome’s multiple-downloads prompt.)
+5. Use the search box and the **All / PDF / Images / Documents / Text / Other** chips to narrow the list; **Export file list** in Details saves a CSV of names, IDs, sizes and statuses.
 6. If Chrome asks whether ChatGPT may download multiple files, choose **Allow**.
 
 Downloads use your Chrome download folder and settings. They are separate original files, not one combined ZIP. Closing the popup does not stop the batch. **Keep the ChatGPT tab open and on the same conversation.** A sleeping or discarded tab may interrupt processing.
 
-**“Downloaded” means validated bytes were handed to Chrome.** Because this version uses page-created Blob links rather than the Downloads API, it cannot confirm disk completion, identify browser-blocked downloads, or detect a canceled Save dialog. Check Chrome’s Downloads (`chrome://downloads`). If a file was blocked or canceled, explicitly select it and use **Download selected again**.
+**“Downloaded” means validated bytes were handed to Chrome.** A row marked **Sent to Chrome · Not verified** is the one exception: the storage host refused a page fetch, so Chrome was given the signed link directly and the bytes could not be checked (see Download safeguards). Because this version uses page-created Blob links rather than the Downloads API, it cannot confirm disk completion, identify browser-blocked downloads, or detect a canceled Save dialog. Check Chrome’s Downloads (`chrome://downloads`). If a file was blocked or canceled, explicitly select it and use **Download selected again**.
 
 ## Stop, resume, and retry
 
@@ -42,11 +42,12 @@ Navigating to another conversation stops the current batch, clears the visible l
 | Path | Purpose |
 | --- | --- |
 | `extension/` | Built extension, ready for Load unpacked |
-| `extension/manifest.json` | Manifest V3, version 1.0.0 |
+| `extension/manifest.json` | Manifest V3, version 1.0.1 |
 | `src/` | Readable source modules, manifest source, and popup HTML/CSS |
 | `scripts/` | Dependency-free build, local icon generation, static checks |
 | `tests/` | Unit tests, separate-realm messaging tests, and Chromium fixture test |
 | `PRIVACY.md` | Privacy policy |
+| `CHANGELOG.md` | What changed between versions |
 | `SECURITY.md` | Trust boundaries and credential handling |
 | `TESTING.md` | Verification results and remaining manual checks |
 
@@ -65,17 +66,19 @@ The only permissions are **storage**, **activeTab**, and the **ChatGPT host perm
 ## Download safeguards
 
 - The initial response may be bytes or metadata containing `download_url`. Only metadata with a usable URL is followed, for at most four hops. The metadata itself is never saved as the attachment.
-- Ordinary JSON/JSONL without `download_url` is preserved exactly. An invalid reserved `download_url` field fails closed.
-- HTML MIME types and HTML document prefixes are rejected. This intentionally blocks genuine HTML attachments too.
-- A zero-byte response is rejected. Known PDF, PNG, JPEG, and Office/ZIP signatures receive an additional check. Unrecognized file types are supported without a signature requirement.
-- Metadata size, or list size if available, is compared with actual bytes. A mismatch retries from stage 1 once, then fails without saving. “Verified” means size matched, not a cryptographic checksum or malware scan.
-- Filenames are normalized, path characters and reserved device names removed, and missing names replaced with safe fallbacks. Secret-like names or email addresses are redacted. Extensions are preserved. Batch duplicate names get suffixes; Chrome handles existing files on disk with its normal download behavior.
-- Credentials and custom account headers are attached only to same-origin ChatGPT backend requests. External storage receives no captured headers or cookies, and no referrer.
-- Automatic HTTP redirects are blocked to prevent account-header forwarding. Metadata hops are followed explicitly, with a fresh decision about which headers may be used.
+- Ordinary JSON/JSONL without `download_url` is preserved exactly. Bytes whose length matches the `file_size_bytes` ChatGPT announced are always treated as the file, so even a JSON attachment that itself contains a `download_url` key downloads correctly.
+- HTML is rejected by MIME type and by document prefix (`<!DOCTYPE html`, `<html`, with BOM/comments/case variations). The one exception is an attachment named `.html`/`.htm` whose bytes exactly match the size ChatGPT announced for it, because an app-shell page returned in place of a file cannot satisfy that.
+- A JSON error envelope (`detail`, `error`, or `status: "error"`) served in place of a non-JSON attachment fails as “ChatGPT returned an error message instead of the file” rather than being saved as `data.csv`.
+- A zero-byte response is rejected unless ChatGPT’s metadata says the file is empty. PDF, PNG, JPEG and Office/ZIP signatures get an extra check that fails text (JSON, HTML, an error message) posing as those formats; other binary content is still saved.
+- Size is verified against the metadata `file_size_bytes`. A mismatch retries from stage 1 once, then fails without saving. Sizes from the attachment list are shown but not used to fail files. “Verified” means size matched, not a checksum or malware scan.
+- Filenames are made filesystem-safe: path characters, control and bidi characters, and reserved device names are removed; missing names get a `chatgpt-file-N-<id>` fallback; `undefined`/`null` are never used. Names are **not** keyword-redacted — `session-notes.txt` stays `session-notes.txt`. Batch duplicates get ` (2)` suffixes; Chrome handles name clashes with files already on disk.
+- Credentials and custom account headers are attached only to same-origin ChatGPT backend requests. External storage receives no captured headers, cookies, or referrer.
+- ChatGPT requests use `redirect: manual`. If ChatGPT answers with an HTTP redirect, it is followed once with **only** the bearer header and no referrer; the browser drops that header when the redirect leaves chatgpt.com, and the final destination must pass the same host allowlist. This was verified in Chromium 151: the storage host received no Authorization, device ID, cookie or referrer. (Auto-following with all headers, as the manual console script did, forwards `oai-device-id` to the storage host.)
 - External destinations are restricted to `*.oaiusercontent.com` and recognized `sdmntpr*` / `oaisdmntpr*` Azure or S3 delivery hosts. Unknown hosts fail safely. This allowlist is in `src/core/endpoints.js`.
-- Requests are sequential. There are four rate-limit retries, three server-error retries, and two network retries per request, with abortable waits. A 120-second timeout includes response-body transfer. Large files may need that configurable limit raised.
+- If an allowlisted storage host refuses the page’s fetch (CORS), and the signed link forces `Content-Disposition: attachment` (`rscd=attachment…` or `response-content-disposition=attachment…`), the link is handed to Chrome inside the page — the same fallback the manual script used. The row shows **Sent to Chrome · Not verified**. Without that forced-attachment marker the file fails instead, so a viewable response can never navigate the ChatGPT tab away.
+- Requests are sequential. There are four rate-limit retries, three server-error retries, and two network retries per request, with abortable waits. A request times out only after 90 seconds with no bytes arriving, so large files are not cut off; the popup shows bytes received for the active file.
 - `Retry-After` seconds or dates are honored, otherwise the delay increases through 30, 60, 90, and 120 seconds. There is no background polling of ChatGPT endpoints. The popup’s status polling is local message passing only.
-- A 401 pauses the batch. It resumes only when you click Resume after a fresh page credential is observed. A 403 or 404 fails that file while allowing other files to proceed.
+- A 401 from ChatGPT pauses the batch. It resumes only when you click Resume after a fresh page credential is observed. A 401/403 from a storage host, a 403, or a 404 fails that file while allowing other files to proceed.
 
 ## Pagination and internal API changes
 
@@ -103,12 +106,14 @@ Recognized `next_cursor` and `next_offset` envelopes are followed. Repeated curs
 | Progress says downloaded, but files are missing | Check Chrome’s Downloads and site permission for automatic/multiple downloads. Select blocked files explicitly to download again. |
 | A Save dialog appears for every file | Chrome’s “Ask where to save each file” setting applies to this extension too. |
 | HTML response / API changed | The route may now return a login page or app shell, or the list schema changed. Nothing is saved under a false filename. |
-| Network/CORS/page policy error | The browser may block the returned storage host or request. This extension does not weaken CSP, use a proxy, or add broad host permissions. |
+| Network/CORS/page policy error | The browser may block the returned storage host or request. Forced-attachment storage links fall back to a Chrome download automatically; others fail. This extension does not weaken CSP, use a proxy, or add broad host permissions. |
+| Sent to Chrome · Not verified | The storage host refused a page fetch, so Chrome downloaded the signed link itself. Check the file in Chrome’s Downloads. |
+| ChatGPT returned an error message instead of the file | The download route returned a JSON error (expired or deleted file, permission change). Nothing was saved. Retry later. |
 | Unsupported destination | ChatGPT may be using a new storage host; inspect and update the centralized allowlist before rebuilding. |
 | Size mismatch | The file was not saved after its one integrity retry. Retry later or download it manually in ChatGPT. |
-| Request timed out | Large or slow files may exceed the per-request timeout. Raise `REQUEST_TIMEOUT_MS` in `src/core/config.js` and rebuild if needed. |
+| Request timed out | No bytes arrived for 90 seconds. Retry the file. On a very slow link, raise `STALL_TIMEOUT_MS` in `src/core/config.js` and rebuild. |
 | Another extension is installed | Existing fetch/history wrappers are preserved. Unrelated ad-blocker telemetry errors are ignored. No need to disable other extensions without evidence they block attachment requests. |
-| API schema changed | Update `endpoints.js` / `files.js` and rebuild. Diagnostics contain only counts and error categories. Never paste credentials into an issue. |
+| API schema changed | Export diagnostics: `listResponseShape` lists the key names and value types (never values) of the attachment-list response, which shows how the schema moved. Update `endpoints.js` / `files.js` and rebuild. Never paste credentials into an issue. |
 
 ## Develop and verify
 
@@ -122,7 +127,7 @@ npm test
 
 The build concatenates named closure modules into four isolated bundles. It contains no dynamic code generation, eval, package fetch, or runtime imports. Icon PNGs are generated from local geometry. Reload the extension’s card in `chrome://extensions` and reload ChatGPT after rebuilding.
 
-For the optional real-browser fixture test:
+For the optional real-browser fixture test (needs `openssl` on the PATH):
 
 ```sh
 npm install
@@ -131,6 +136,6 @@ npm run build
 npm run test:browser
 ```
 
-The browser fixture uses a fresh temporary Chromium profile, synthetic credentials, and intercepted ChatGPT routes. It never uses your signed-in Chrome profile. Consult `TESTING.md` for which checks were actually executed in this delivery.
+Branded Google Chrome 137+ ignores `--load-extension`, so the test uses Playwright’s Chromium. It uses a fresh temporary profile and synthetic credentials. ChatGPT is answered by Playwright routes; the storage host is a local TLS server behind a proxy that refuses every other host, so real CORS and redirect behavior is exercised without touching the network. It never uses your signed-in Chrome profile. Consult `TESTING.md` for which checks were actually executed in this delivery.
 
 Relevant primary documentation: [Chrome content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), [manifest execution worlds](https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts), [Chrome messaging](https://developer.chrome.com/docs/extensions/develop/concepts/messaging), [Playwright extension tests](https://playwright.dev/docs/chrome-extensions).
