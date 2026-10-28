@@ -1,10 +1,18 @@
 # ChatGPT Attachment Downloader
 
-A personal, unpacked Chrome extension for downloading attachments from **the ChatGPT conversation you currently have open**. It scans on demand and downloads one file at a time, with a 1.5-second pause between files. Version 1.0.1 (see `CHANGELOG.md`). Not affiliated with or endorsed by OpenAI.
+A personal, unpacked Chrome extension for downloading the attachments and the transcript of **the ChatGPT conversation you currently have open**. It scans on demand and downloads one file at a time, with a 1.5-second pause between files. Version 1.1.0 (see `CHANGELOG.md`). Not affiliated with or endorsed by OpenAI.
+
+## Install from GitHub
+
+```sh
+git clone https://github.com/lekandigital/chatgpt-attachment-downloader.git
+```
+
+Then load the `extension` folder as described below. No build step is needed: `extension/` is committed ready to load.
 
 ## Install — no coding or build step needed
 
-1. Extract the ZIP. Keep the extracted folder somewhere permanent; Chrome loads the extension from that folder.
+1. Clone the repository (or extract a ZIP of it). Keep the folder somewhere permanent; Chrome loads the extension from that folder.
 2. In Chrome, enter `chrome://extensions` in the address bar.
 3. Turn on **Developer mode** at the upper right.
 4. Click **Load unpacked**.
@@ -27,6 +35,29 @@ Downloads use your Chrome download folder and settings. They are separate origin
 
 **“Downloaded” means validated bytes were handed to Chrome.** A row marked **Sent to Chrome · Not verified** is the one exception: the storage host refused a page fetch, so Chrome was given the signed link directly and the bytes could not be checked (see Download safeguards). Because this version uses page-created Blob links rather than the Downloads API, it cannot confirm disk completion, identify browser-blocked downloads, or detect a canceled Save dialog. Check Chrome’s Downloads (`chrome://downloads`). If a file was blocked or canceled, explicitly select it and use **Download selected again**.
 
+## Chat transcript
+
+The **Transcript** box in the popup saves the open conversation itself. It needs no scan.
+
+- **Save Markdown** writes `<conversation title> (transcript).md`. It contains the title, a link back to the chat, the created/updated times and the model, then every visible message under `### You` and `### ChatGPT` headings with UTC timestamps.
+  - Web citations become inline links, and each reply ends with a **Sources** list.
+  - Code is fenced.
+  - Files you uploaded are listed under the message with a 📎.
+  - Images appear where ChatGPT showed them.
+  - Attachments and images that were already downloaded are **linked by their saved filename**, so the transcript works when it sits in the same folder as the files.
+- **Save JSON** writes the conversation exactly as ChatGPT’s API returned it: every branch and all metadata, for archiving or other tools.
+- **Include the Markdown transcript with Download all** is on by default and remembered. When a Download all finishes, the transcript is saved last, so its links match the files just saved. If every attachment was already downloaded, Download all saves only the transcript. Stop cancels it, and a transcript failure never fails the attachment batch.
+
+The Markdown follows what ChatGPT shows you. It **leaves out**:
+- other branches: earlier versions of regenerated or edited messages you moved away from;
+- system messages;
+- your custom instructions and saved memories;
+- the model’s hidden reasoning;
+- tool calls and raw tool output (for example web.run results);
+- messages ChatGPT marks hidden.
+
+Use JSON when you want everything. Which messages are shown, and how citations are resolved, follow [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter), the actively maintained userscript (v2.38.0, Oct 2026), which uses the same `/backend-api/conversation/{id}` route. The transcript request reuses the extension’s page-memory authentication, retries, 429 handling and Stop, exactly like attachment downloads.
+
 ## Stop, resume, and retry
 
 - **Stop** immediately aborts the current network request or retry wait. Already handed-off files remain completed; unstarted files stay pending. It cannot cancel a file Chrome has already accepted.
@@ -48,6 +79,7 @@ Navigating to another conversation stops the current batch, clears the visible l
 | `tests/` | Unit tests, separate-realm messaging tests, and Chromium fixture test |
 | `PRIVACY.md` | Privacy policy |
 | `CHANGELOG.md` | What changed between versions |
+| `THIRD_PARTY_NOTICES.md` | MIT notice for the adapted chatgpt-exporter logic and test fixtures |
 | `SECURITY.md` | Trust boundaries and credential handling |
 | `TESTING.md` | Verification results and remaining manual checks |
 
@@ -87,6 +119,7 @@ This version implements the internal routes supplied in the build specification:
 ```text
 /backend-api/conversations/{conversationId}/files?limit=200
 /backend-api/files/download/{fileId}?check_context_scopes_for_conversation_id={conversationId}&download_intent=true
+/backend-api/conversation/{conversationId}            (transcript)
 ```
 
 It recursively extracts `file_id` or `id` values beginning with `file_` (also tolerating `file-`) and associated filename, size, and MIME metadata. It preserves response order and deduplicates by file ID.

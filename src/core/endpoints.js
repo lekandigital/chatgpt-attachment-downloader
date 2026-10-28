@@ -6,6 +6,9 @@ const Endpoints = (() => {
     if (page?.kind === 'offset') url.searchParams.set('offset', String(page.value));
     return url.href;
   }
+  function conversation(conversationId) {
+    return new URL(`/backend-api/conversation/${encodeURIComponent(conversationId)}`, Config.ORIGIN).href;
+  }
   function download(conversationId, fileId) {
     const url = new URL(`/backend-api/files/download/${encodeURIComponent(fileId)}`, Config.ORIGIN);
     url.searchParams.set('check_context_scopes_for_conversation_id', conversationId);
@@ -56,5 +59,5 @@ const Endpoints = (() => {
     const signaled = candidates.some(v => v.has_more === true || v.has_next_page === true || v.next || v.next_page || v.next_cursor);
     return { page: null, partial: !!signaled || returned >= Config.FILE_LIST_LIMIT };
   }
-  return Object.freeze({ list, download, safeDownload, linkDownload, nextPage });
+  return Object.freeze({ list, conversation, download, safeDownload, linkDownload, nextPage });
 })();

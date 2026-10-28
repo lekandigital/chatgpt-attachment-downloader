@@ -8,6 +8,7 @@ let storageError = false;
 let localError = null;
 let hideCompleted = false;
 let typeFilter = 'all';
+let includeTranscript = true;
 let listSignature = '';
 const selected = new Set();
 const LABELS = { pending: '○ Pending', resolving: '↻ Resolving', downloading: '↓ Downloading', downloaded: '✓ Downloaded',
@@ -16,7 +17,7 @@ const LOGS = { CONVERSATION: 'Conversation detected', AUTH_READY: 'Authenticatio
   SCAN_START: 'Scanning attachments', SCAN_DONE: 'Scan completed', BATCH_START: 'Batch started', FILE_SAVED: 'File handed to Chrome',
   METADATA: 'Resolved a file download link', RATE_LIMIT: 'Rate limited; waiting to retry', RETRY: 'Retrying request',
   STOPPED: 'Stopped', COMPLETED: 'Batch completed', SIZE_RETRY: 'Size mismatch; retrying once', ERROR: 'Request failed',
-  LINK_SAVED: 'Storage link handed to Chrome (not verified)' };
+  LINK_SAVED: 'Storage link handed to Chrome (not verified)', TRANSCRIPT_SAVED: 'Transcript saved' };
 const FAILURE_LABELS = { SIZE_MISMATCH: '! Size mismatch', HTML_RESPONSE: '! Received HTML', HTTP_429: '! Rate limited',
   AUTH_EXPIRED: '! Authentication expired', NETWORK: '! Network error', TIMEOUT: '! Timed out' };
 const TYPES = {
@@ -102,7 +103,7 @@ function renderFiles(busy) {
 }
 function render() {
   const files = state?.files || [];
-  const busy = state?.batch.status === 'running' || state?.scan.status === 'scanning';
+  const busy = state?.batch.status === 'running' || state?.scan.status === 'scanning' || state?.transcript.status === 'exporting';
   const ready = connected && !!state?.auth.detected && !!state?.conversationId;
   const scanned = state?.scan.fresh === true;
   const downloaded = files.filter(file => file.status === 'downloaded').length;
@@ -151,8 +152,20 @@ function render() {
   $('retry-failed').disabled = !canDownload || !failed;
   for (const id of ['select-all', 'select-none', 'select-failed']) $(id).disabled = busy;
   $('clear-completed').textContent = hideCompleted ? 'Show completed' : 'Hide completed';
-  for (const chip of document.querySelectorAll('#type-filters .chip')) chip.setAttribute('aria-pressed', String(chip.dataset.type === typeFilter));
+  $('transcript-md').addEventListener('click', () => { void command('EXPORT_TRANSCRIPT', { format: 'markdown' }); });
+$('transcript-json').addEventListener('click', () => { void command('EXPORT_TRANSCRIPT', { format: 'json' }); });
+$('include-transcript').addEventListener('change', async event => {
+  includeTranscript = event.target.checked;
+  await send({ type: 'SET_INCLUDE_TRANSCRIPT', value: includeTranscript });
+});
+for (const chip of document.querySelectorAll('#type-filters .chip')) chip.setAttribute('aria-pressed', String(chip.dataset.type === typeFilter));
   $('export-list').disabled = !files.length;
+  const transcript = state?.transcript;
+  for (const id of ['transcript-md', 'transcript-json']) $(id).disabled = !ready || busy || pendingAction;
+  $('include-transcript').checked = includeTranscript;
+  $('transcript-status').textContent = transcript?.status === 'exporting' ? 'Preparing transcript…'
+    : transcript?.status === 'saved' ? `Transcript saved · ${transcript.messages} message${transcript.messages === 1 ? '' : 's'} (${transcript.format === 'json' ? 'JSON' : 'Markdown'})`
+    : transcript?.status === 'failed' ? `Transcript failed: ${errorLabel(transcript.error)}` : '';
   $('handoff-note').hidden = !files.length;
   $('forget').disabled = busy;
   $('export').disabled = !state;
@@ -160,14 +173,15 @@ function render() {
   const lines = (state?.logs || []).map(log => `${new Date(log.at).toLocaleTimeString()}  ${log.error ? errorLabel(log.error) : LOGS[log.code] || 'Status updated'}`);
   $('log').textContent = lines.join('\n'); $('log').style.whiteSpace = 'pre-wrap';
 }
-async function command(type) {
+async function command(type, extra = {}) {
   if (!tabId || (!state && type !== 'GET_STATUS')) return;
   pendingAction = true; localError = null;
   // Starting a batch is the acknowledgement: the notice was already on screen above the button.
   if (!acknowledged && type !== 'SCAN_FILES' && type !== 'STOP_DOWNLOADS') acknowledged = (await send({ type: 'ACK_DOWNLOADS' })).ok === true;
   render();
   const result = await send({ type: 'UI_COMMAND', tabId, command: { type, conversationId: state?.conversationId,
-    ...(type === 'DOWNLOAD_SELECTED' ? { ids: [...selected] } : {}) } });
+    ...(type === 'DOWNLOAD_SELECTED' ? { ids: [...selected] } : {}),
+    ...(type === 'START_DOWNLOADS' ? { transcript: includeTranscript } : {}), ...extra } });
   if (result.state) update(result.state);
   if (!result.ok) localError = result.error || { code: 'BRIDGE' };
   storageError = result.storageError === true;
@@ -216,6 +230,6 @@ async function poll() {
 $('version').textContent = `v${chrome.runtime.getManifest().version}`;
 void (async () => {
   const view = await send({ type: 'OPEN_VIEW' });
-  tabId = view.tabId ?? null; acknowledged = view.acknowledged === true;
+  tabId = view.tabId ?? null; acknowledged = view.acknowledged === true; includeTranscript = view.includeTranscript !== false;
   render(); await poll();
 })();

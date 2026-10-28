@@ -32,7 +32,8 @@ const Safety = (() => {
   const FILE_STATUSES = new Set(['pending', 'resolving', 'downloading', 'downloaded', 'failed', 'stopped', 'rate_limited', 'skipped']);
   const BATCH_STATUSES = new Set(['idle', 'running', 'stopped', 'paused', 'completed']);
   const SCAN_STATUSES = new Set(['idle', 'scanning', 'completed', 'failed', 'stopped']);
-  const LOG_CODES = new Set(['CONVERSATION', 'AUTH_READY', 'AUTH_EXPIRED', 'SCAN_START', 'SCAN_DONE', 'BATCH_START', 'FILE_SAVED', 'LINK_SAVED', 'METADATA', 'RATE_LIMIT', 'RETRY', 'STOPPED', 'COMPLETED', 'SIZE_RETRY', 'ERROR']);
+  const TRANSCRIPT_STATUSES = new Set(['idle', 'exporting', 'saved', 'failed']);
+  const LOG_CODES = new Set(['TRANSCRIPT_SAVED', 'CONVERSATION', 'AUTH_READY', 'AUTH_EXPIRED', 'SCAN_START', 'SCAN_DONE', 'BATCH_START', 'FILE_SAVED', 'LINK_SAVED', 'METADATA', 'RATE_LIMIT', 'RETRY', 'STOPPED', 'COMPLETED', 'SIZE_RETRY', 'ERROR']);
   const SENSITIVE = /bearer|authorization|token|secret|cookie|session|password|api[_-]?key/i;
   const JWT = /[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}/g;
   // For diagnostic free text (console errors). Keyword-redacts aggressively.
@@ -133,6 +134,10 @@ const Safety = (() => {
       activeId: id(value.activeId, true), activeBytes: size(value.activeBytes), retryAt: size(value.retryAt),
       waiting: ['rate_limit', 'retry'].includes(value.waiting) ? value.waiting : null,
       largeFile: value.largeFile === true,
+      transcript: { status: TRANSCRIPT_STATUSES.has(value.transcript?.status) ? value.transcript.status : 'idle',
+        format: ['markdown', 'json'].includes(value.transcript?.format) ? value.transcript.format : null,
+        messages: count(value.transcript?.messages), exportedAt: size(value.transcript?.exportedAt),
+        error: value.transcript?.error ? error(value.transcript.error) : null },
       error: value.error ? error(value.error) : null,
       logs: Array.isArray(value.logs) ? value.logs.slice(-60).filter(l => LOG_CODES.has(l?.code)).map(l => ({
         at: size(l.at), code: l.code, error: l.error ? error(l.error) : null,
@@ -155,6 +160,7 @@ const Safety = (() => {
       // Categories only: diagnostics are meant to be shareable, so filenames and IDs are left out.
       errors: (clean?.files || []).filter(f => f.error).map(f => ({ category: f.error.code })),
       lastError: clean?.error?.code || null,
+      transcriptStatus: clean?.transcript.status || 'idle', transcriptError: clean?.transcript.error?.code || null,
       // Key names and types of the attachment-list response, for spotting an API change. No values.
       listResponseShape: clean?.scan.shape || [] };
   }

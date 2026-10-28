@@ -2,12 +2,12 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { webcrypto } from 'node:crypto';
-const sourceFiles = ['config', 'safety', 'protocol', 'endpoints', 'auth', 'transfer', 'files', 'controller'];
+const sourceFiles = ['config', 'safety', 'protocol', 'endpoints', 'auth', 'transfer', 'files', 'transcript', 'controller'];
 export const source = (await Promise.all(sourceFiles.map(file => readFile(new URL(`../src/core/${file}.js`, import.meta.url), 'utf8')))).join('\n');
 export function core(extra = {}) {
   const context = vm.createContext({ URL, Request, Headers, Response, Blob, ReadableStream, TextEncoder, TextDecoder,
     AbortController, DOMException, crypto: webcrypto, structuredClone, console, setTimeout, clearTimeout, ...extra });
-  return vm.runInContext(`${source}\n({ Config, Safety, Protocol, Endpoints, Authentication, Transfer, AttachmentFiles, JobController })`, context);
+  return vm.runInContext(`${source}\n({ Config, Safety, Protocol, Endpoints, Authentication, Transfer, AttachmentFiles, Transcript, JobController })`, context);
 }
 export function plain(value) { return JSON.parse(JSON.stringify(value)); }
 export async function until(predicate, message = 'Condition did not become true', attempts = 200) {

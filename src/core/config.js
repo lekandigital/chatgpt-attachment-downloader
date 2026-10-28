@@ -1,7 +1,7 @@
 const Config = Object.freeze({
   ORIGIN: 'https://chatgpt.com',
   NAMESPACE: 'CHATGPT_ATTACHMENT_DOWNLOADER_V1',
-  VERSION: '1.0.1',
+  VERSION: '1.1.0',
   FILE_LIST_LIMIT: 200,
   MAX_FILES: 5000,
   MAX_PAGES: 50,

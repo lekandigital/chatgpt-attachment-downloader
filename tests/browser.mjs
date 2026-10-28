@@ -71,6 +71,12 @@ try {
   ];
   const page = '<!DOCTYPE html><html><body>An exported page the user attached</body></html>';
   const locked = 'https://files.oaiusercontent.com/locked.bin?rscd=attachment%3B%20filename%3Dlocked.bin&sig=SIGNED_FIXTURE';
+  const message = (role, parts, extra = {}) => ({ author: { role }, recipient: 'all', create_time: 1793200000, content: { content_type: 'text', parts }, ...extra });
+  const conversation = { title: 'Fixture chat', create_time: 1793200000, update_time: 1793200100, current_node: 'a1', mapping: {
+    root: { id: 'root', parent: null, children: ['u1'], message: null },
+    u1: { id: 'u1', parent: 'root', children: ['a1'], message: message('user', ['Please review the deck.'], { metadata: { attachments: [{ id: 'file_direct', name: 'direct.pdf', mime_type: 'application/pdf' }] } }) },
+    a1: { id: 'a1', parent: 'u1', children: [], message: message('assistant', ['The deck looks good.']) },
+  } };
   const jsonBody = JSON.stringify({ contents: 'ordinary attachment', number: 42 });
   const jsonlBody = '{"line":1}\n{"line":2}\n';
   let hold = false;
@@ -82,6 +88,7 @@ try {
       if (url.pathname === '/fixture.js') return fulfill(`fetch('/backend-api/me',{headers:{Authorization:'Bearer SYNTHETIC_BROWSER_ONLY','oai-device-id':'FIXTURE_DEVICE'}});`, 'application/javascript');
       if (url.pathname === '/backend-api/me') return fulfill('{}', 'application/json');
       if (url.pathname.includes('/conversations/')) return fulfill(JSON.stringify({ files, has_more: false }), 'application/json');
+      if (url.pathname === '/backend-api/conversation/fixture-A') return fulfill(JSON.stringify(conversation), 'application/json');
       if (url.pathname.includes('/files/download/file_two_stage')) return fulfill(JSON.stringify({
         download_url: 'https://files.oaiusercontent.com/fixture.pdf?sig=SIGNED_FIXTURE', file_name: 'real-deck.pdf', file_size_bytes: Buffer.byteLength(pdf),
       }), 'application/json');
@@ -156,9 +163,12 @@ try {
   assert.equal(byId('file_cors').delivery, 'link');
   assert.equal(byId('file_page').verified, true);
   await new Promise(r => setTimeout(r, 1000));
-  assert.equal(downloads.length, 10);
+  // Ten attachments, then the Markdown transcript ("Include transcript" is on by default).
+  assert.equal(downloads.length, 11);
   const filenames = downloads.map(d => d.suggestedFilename());
-  assert.equal(new Set(filenames).size, 10);
+  assert.equal(new Set(filenames).size, 11);
+  assert.equal(filenames.at(-1), 'Fixture chat (transcript).md');
+  assert.equal(done.transcript.status, 'saved'); assert.equal(done.transcript.messages, 2);
   for (const name of ['real-deck.pdf', 'session-notes.txt', 'moved.pdf', 'locked.bin', 'report.html']) assert.ok(filenames.includes(name), name);
   for (const name of ['bad.pdf', 'data.csv', 'deck.pdf']) assert.ok(!filenames.includes(name), name);
   for (const download of downloads) {
@@ -169,6 +179,10 @@ try {
     if (download.suggestedFilename() === 'transcript.jsonl') assert.equal(bytes.toString(), jsonlBody);
     if (download.suggestedFilename() === 'report.html') assert.equal(bytes.toString(), page);
     if (download.suggestedFilename() === 'locked.bin') assert.equal(bytes.toString(), 'LOCK');
+    if (download.suggestedFilename().endsWith('(transcript).md')) {
+      const markdown = bytes.toString();
+      for (const part of ['# Fixture chat', '### You', 'Please review the deck.', '- 📎 [direct.pdf](<direct.pdf>)', '### ChatGPT', 'The deck looks good.']) assert.ok(markdown.includes(part), part);
+    }
   }
   const external = storageHits;
   assert.ok(external.some(r => r.url.includes('/redirected.pdf')), 'redirect was not followed');
@@ -179,6 +193,13 @@ try {
   popup = await openPopup();
   await popup.setViewportSize({ width: 420, height: 900 });
   await popup.screenshot({ path: path.join(results, 'popup-completed.png'), fullPage: true });
+  // The JSON transcript is the API response, equal once parsed.
+  const jsonDownload = chat.waitForEvent('download');
+  await popup.locator('#transcript-json').click();
+  const transcriptJson = await jsonDownload;
+  assert.equal(transcriptJson.suggestedFilename(), 'Fixture chat (transcript).json');
+  assert.deepEqual(JSON.parse(await readFile(await transcriptJson.path(), 'utf8')), conversation);
+  await popup.locator('#transcript-status').filter({ hasText: 'Transcript saved · 2 messages (JSON)' }).waitFor();
   await popup.close();
   popup = await openPopup();
   await popup.locator('#phase').filter({ hasText: 'Completed' }).waitFor();

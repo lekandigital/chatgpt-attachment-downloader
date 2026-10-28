@@ -1,8 +1,20 @@
 # Changelog
 
+## 1.1.0 — 2026-10-28
+
+### Added
+- **Chat transcript export**, from the popup’s Transcript box:
+  - **Save Markdown**: a readable transcript with inline citation links, Sources lists, fenced code, uploaded-file lists, and images. Already-downloaded attachments are linked by their saved filenames.
+  - **Save JSON**: the conversation exactly as ChatGPT’s API returned it, with all branches.
+  - **Include the Markdown transcript with Download all** (on by default): the transcript is saved after the attachments.
+- The request uses `/backend-api/conversation/{id}`, the same route as the actively maintained [chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) (v2.38.0). It runs through the existing page-memory auth, retry, 429 and Stop handling. Message selection and citation handling are adapted from that project (MIT, see `THIRD_PARTY_NOTICES.md`).
+
+### Fixed
+- **Conversation titles were still keyword-redacted** in the popup (for example “Session planning” showed as “[redacted]”), because the controller sanitized them before display.
+
 ## 1.0.1 — 2026-10-28
 
-First version verified with the extension loaded in a real Chromium (see `TESTING.md`).
+First version verified with the extension loaded in a real Chromium (see `TESTING.md`), and confirmed working on a live signed-in ChatGPT conversation.
 
 ### Fixed
 - **Files were renamed** when their name contained “session”, “token”, “secret”, “cookie”, “password”, “api key” or an email address. For example, `session-notes.txt` was saved as `redacted-file.txt`. Names are now only made filesystem-safe. Conversation titles were affected the same way.

@@ -1,6 +1,7 @@
 INSTALL: Open chrome://extensions, enable Developer mode, click Load unpacked, and select the
 "extension" folder inside this folder. Then reload your ChatGPT tab. Full instructions: README.md.
 
-Version 1.0.1. This folder is a Git repository (history includes the original 1.0.0 commit).
-Unit tests and a real-Chromium test with the extension loaded both pass; a live signed-in ChatGPT
-check is the remaining step — see TESTING.md, "Still to verify on the live site".
+Version 1.1.0 (attachments + chat transcript). This folder is a Git repository (history includes the original 1.0.0 commit).
+Source: https://github.com/lekandigital/chatgpt-attachment-downloader
+Attachment downloads (1.0.1) were confirmed working on a live signed-in ChatGPT; the 1.1.0
+transcript export is verified in tests and real Chromium — see TESTING.md.

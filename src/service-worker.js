@@ -3,6 +3,7 @@ let writes = Promise.resolve();
 const historyKey = id => `cad:history:${id}`;
 const INDEX_KEY = 'cad:history-index';
 const ACK_KEY = 'cad:multiple-downloads-ack';
+const TRANSCRIPT_KEY = 'cad:include-transcript';
 function pageSender(sender) {
   try { return sender.id === chrome.runtime.id && sender.frameId === 0 &&
     Number.isInteger(sender.tab?.id) && new URL(sender.url).origin === Config.ORIGIN; }
@@ -52,10 +53,14 @@ async function route(message, sender) {
   if (!popupSender(sender)) return { ok: false };
   if (message?.type === 'OPEN_VIEW') {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const prefs = await chrome.storage.local.get(ACK_KEY);
+    const prefs = await chrome.storage.local.get([ACK_KEY, TRANSCRIPT_KEY]);
     let chatgpt = false;
     try { chatgpt = new URL(tab?.url).origin === Config.ORIGIN; } catch { /* Unsupported page. */ }
-    return { ok: true, tabId: chatgpt ? tab.id : null, acknowledged: prefs[ACK_KEY] === true };
+    return { ok: true, tabId: chatgpt ? tab.id : null, acknowledged: prefs[ACK_KEY] === true,
+      includeTranscript: prefs[TRANSCRIPT_KEY] !== false };
+  }
+  if (message?.type === 'SET_INCLUDE_TRANSCRIPT') {
+    await chrome.storage.local.set({ [TRANSCRIPT_KEY]: message.value === true }); return { ok: true };
   }
   if (message?.type === 'ACK_DOWNLOADS') {
     await chrome.storage.local.set({ [ACK_KEY]: true }); return { ok: true };

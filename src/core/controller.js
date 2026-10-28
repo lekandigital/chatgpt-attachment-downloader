@@ -6,18 +6,20 @@ const JobController = (() => {
     let restored = new Map();
     let state = initial();
     function initial() {
-      return { instanceId, conversationId: Safety.conversation(href()), title: Safety.text(title(), 120), revision: 0,
+      return { instanceId, conversationId: Safety.conversation(href()), title: Safety.label(title()), revision: 0,
         auth: auth.status(), scan: { status: 'idle', fresh: false, lastScannedAt: null, partial: false, shape: [] }, files: [],
         batch: { status: 'idle', total: 0, completed: 0, successful: 0, failed: 0, startedAt: null, stoppedAt: null },
-        activeId: null, activeBytes: null, retryAt: null, waiting: null, largeFile: false, error: null, logs: [] };
+        activeId: null, activeBytes: null, retryAt: null, waiting: null, largeFile: false, error: null, logs: [],
+        transcript: idleTranscript() };
     }
+    function idleTranscript() { return { status: 'idle', format: null, messages: 0, exportedAt: null, error: null }; }
     function log(code, error = null) {
       state.logs.push({ at: Date.now(), code, error: error ? Safety.error(error) : null });
       if (state.logs.length > 60) state.logs.shift();
     }
     function publish() {
       state.auth = auth.status();
-      state.title = Safety.text(title(), 120);
+      state.title = Safety.label(title());
       state.revision++;
       publishedAt = Date.now();
       emit(Safety.state(state));
@@ -39,7 +41,8 @@ const JobController = (() => {
       const item = state.files.find(f => f.id === state.activeId);
       if (item && item.status !== 'downloaded') { item.status = 'stopped'; item.error = null; }
       if (operation.kind === 'scan') state.scan.status = 'stopped';
-      else { state.batch.status = 'stopped'; state.batch.stoppedAt = Date.now(); }
+      else if (operation.kind === 'batch') { state.batch.status = 'stopped'; state.batch.stoppedAt = Date.now(); }
+      if (state.transcript.status === 'exporting') state.transcript.status = 'idle';
       state.retryAt = null; state.waiting = null; state.activeBytes = null;
       log('STOPPED'); publish();
     }
@@ -115,6 +118,40 @@ const JobController = (() => {
         if (current(op)) { operation = null; state.retryAt = null; state.waiting = null; publish(); }
       }
     }
+    async function saveTranscript(op, format) {
+      // Downloaded attachments are linked by their saved names, so the transcript works beside them.
+      const names = new Map(state.files.filter(f => f.status === 'downloaded').map(f => [f.id, f.filename]));
+      state.transcript = { ...idleTranscript(), status: 'exporting', format };
+      publish();
+      try {
+        const data = await clientFor(op).request(Endpoints.conversation(op.conversationId), op.abort.signal, async (response, signal, touch) => {
+          if (/html/i.test(response.headers.get('content-type') || '')) throw new Transfer.Fault('HTML_RESPONSE');
+          const text = await (await AttachmentFiles.readBody(response, 'application/json', touch)).text();
+          try { return JSON.parse(text); } catch { throw new Transfer.Fault('API_CHANGED'); }
+        });
+        guard(op);
+        if (!Transcript.isConversation(data)) throw new Transfer.Fault('API_CHANGED');
+        const rendered = Transcript.render(data, { conversationId: op.conversationId, names });
+        const markdown = format === 'markdown';
+        const extension = markdown ? 'md' : 'json';
+        // JSON is the API response unchanged: every branch and all metadata, for archiving.
+        const blob = new Blob([markdown ? rendered.markdown : JSON.stringify(data, null, 2)], { type: markdown ? 'text/markdown' : 'application/json' });
+        const filename = Safety.filename(`${rendered.title} (transcript).${extension}`, `ChatGPT conversation (transcript).${extension}`);
+        guard(op);
+        save(blob, filename);
+        state.transcript = { status: 'saved', format, messages: rendered.messages, exportedAt: Date.now(), error: null };
+        log('TRANSCRIPT_SAVED');
+      } catch (error) {
+        // Stop and navigation are handled by the caller; anything else fails only the transcript.
+        if (!current(op) || op.abort.signal.aborted) throw error;
+        state.transcript = { ...state.transcript, status: 'failed', error: recordError(error, true) };
+      }
+    }
+    async function transcriptOnly(op, format) {
+      try { await saveTranscript(op, format); }
+      catch { /* Stopped or navigated away: stop() and navigate() already updated the state. */ }
+      finally { if (current(op)) { operation = null; state.retryAt = null; state.waiting = null; publish(); } }
+    }
     async function batch(op, queue) {
       const usedNames = new Set(state.files.filter(f => f.status === 'downloaded').map(f => f.filename.toLowerCase()));
       function uniqueName(name) {
@@ -176,7 +213,13 @@ const JobController = (() => {
           publish();
           if (index < queue.length - 1) await wait(Config.FILE_DELAY_MS, op.abort.signal);
         }
-        if (current(op) && state.batch.status === 'running') { state.batch.status = 'completed'; log('COMPLETED'); }
+        if (current(op) && state.batch.status === 'running') {
+          if (op.transcript) {
+            if (queue.length) await wait(Config.FILE_DELAY_MS, op.abort.signal);
+            await saveTranscript(op, 'markdown');
+          }
+          state.batch.status = 'completed'; log('COMPLETED');
+        }
       } catch (error) {
         if (!current(op)) return;
         if (op.abort.signal.aborted || error.code === 'STOPPED') state.batch.status = 'stopped';
@@ -194,7 +237,7 @@ const JobController = (() => {
       if (!cmd) return { ok: false, error: { code: 'INVALID_FILE' } };
       try {
         if (cmd.type === 'GET_STATUS') {
-          state.title = Safety.text(title(), 120);
+          state.title = Safety.label(title());
           return { ok: true, state: Safety.state(state) };
         }
         // STOP is scoped too: a stale popup cannot stop a newly navigated conversation.
@@ -211,6 +254,11 @@ const JobController = (() => {
           void scan(op);
           return { ok: true, state: Safety.state(state) };
         }
+        if (cmd.type === 'EXPORT_TRANSCRIPT') {
+          const op = begin('transcript');
+          void transcriptOnly(op, cmd.format);
+          return { ok: true, state: Safety.state(state) };
+        }
         if (!state.scan.fresh) throw new Transfer.Fault('SCAN_REQUIRED');
         let queue;
         if (cmd.type === 'DOWNLOAD_SELECTED') {
@@ -219,8 +267,15 @@ const JobController = (() => {
           queue = state.files.filter(f => ids.has(f.id));
         } else if (cmd.type === 'RETRY_FAILED') queue = state.files.filter(f => f.status === 'failed');
         else queue = state.files.filter(f => ['pending', 'stopped', 'failed'].includes(f.status));
+        const withTranscript = cmd.type === 'START_DOWNLOADS' && cmd.transcript === true;
+        if (!queue.length && withTranscript) {
+          // Everything is already downloaded; the transcript alone was requested.
+          void transcriptOnly(begin('transcript'), 'markdown');
+          return { ok: true, state: Safety.state(state) };
+        }
         if (!queue.length) return { ok: true, state: Safety.state(state) };
         const op = begin('batch');
+        op.transcript = withTranscript;
         state.batch = { status: 'running', total: queue.length, completed: 0, successful: 0, failed: 0, startedAt: Date.now(), stoppedAt: null };
         log('BATCH_START'); publish();
         void batch(op, queue);

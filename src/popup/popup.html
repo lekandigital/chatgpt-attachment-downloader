@@ -29,6 +29,17 @@
       <button id="download-all" class="primary" disabled>Download all</button>
       <button id="stop" class="danger" hidden>Stop</button>
     </div>
+    <section class="transcript" aria-labelledby="transcript-label">
+      <div class="transcript-row">
+        <span id="transcript-label" class="label">TRANSCRIPT</span>
+        <span class="transcript-buttons">
+          <button id="transcript-md" class="text-button" disabled>Save Markdown</button>
+          <button id="transcript-json" class="text-button" disabled>Save JSON</button>
+        </span>
+      </div>
+      <label class="check"><input id="include-transcript" type="checkbox" checked> Include the Markdown transcript with Download all</label>
+      <p id="transcript-status" class="muted" role="status"></p>
+    </section>
     <section id="progress-section" aria-label="Download progress" hidden>
       <div class="progress-heading"><strong id="phase">Ready</strong><span id="progress-count">0 / 0</span></div>
       <progress id="progress" value="0" max="1" aria-label="Files processed"></progress>

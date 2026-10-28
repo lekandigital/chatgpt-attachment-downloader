@@ -1,5 +1,6 @@
 const Protocol = (() => {
-  const COMMANDS = new Set(['GET_STATUS', 'SCAN_FILES', 'START_DOWNLOADS', 'DOWNLOAD_SELECTED', 'STOP_DOWNLOADS', 'RESUME', 'RETRY_FAILED']);
+  const COMMANDS = new Set(['GET_STATUS', 'SCAN_FILES', 'START_DOWNLOADS', 'DOWNLOAD_SELECTED', 'STOP_DOWNLOADS', 'RESUME', 'RETRY_FAILED', 'EXPORT_TRANSCRIPT']);
+  const TRANSCRIPT_FORMATS = new Set(['markdown', 'json']);
   function command(value, allowHistory = false) {
     if (!value || typeof value !== 'object' ||
       !(COMMANDS.has(value.type) || (allowHistory && value.type === 'RESTORE_HISTORY'))) return null;
@@ -10,6 +11,11 @@ const Protocol = (() => {
       result.ids = [...new Set(value.ids)];
     }
     if (value.type === 'RESTORE_HISTORY') result.files = Safety.files(value.files);
+    if (value.type === 'EXPORT_TRANSCRIPT') {
+      if (!TRANSCRIPT_FORMATS.has(value.format)) return null;
+      result.format = value.format;
+    }
+    if (value.type === 'START_DOWNLOADS') result.transcript = value.transcript === true;
     return result;
   }
   function requestId(value) { return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value); }

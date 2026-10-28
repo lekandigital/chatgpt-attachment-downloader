@@ -201,5 +201,5 @@ const AttachmentFiles = (() => {
         mime: result.mime, verified: expectedSize !== null };
     }
   }
-  return Object.freeze({ extract, isListShape, describe, scan, inspect, resolve, html, checkMagic });
+  return Object.freeze({ extract, isListShape, describe, scan, readBody, inspect, resolve, html, checkMagic });
 })();

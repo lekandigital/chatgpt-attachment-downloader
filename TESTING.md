@@ -1,13 +1,41 @@
-# Verification report — 1.0.1, 2026-10-28
+# Verification report — 1.1.0, 2026-10-28
 
 ## Summary
 
 | Layer | Status |
 | --- | --- |
 | Static checks (`npm run check`) | Passed |
-| Unit and separate-realm messaging tests (`npm test`) | **53 passed**, 0 failed, 0 skipped |
+| Unit and separate-realm messaging tests (`npm test`) | **61 passed**, 0 failed, 0 skipped |
 | Real Chromium with the unpacked extension loaded (`npm run test:browser`) | **Passed** (Playwright Chromium 151) |
-| Live signed-in ChatGPT conversation | **Not yet run** — see “Still to verify” |
+| Live signed-in ChatGPT: attachment downloads (1.0.1) | **Confirmed working** by the user on 2026-10-28 |
+| Live signed-in ChatGPT: transcript export (1.1.0) | Not yet run live (see “Still to verify”) |
+
+## Transcript export (1.1.0)
+
+`tests/transcript.test.mjs` covers the renderer on two real-structure conversations from chatgpt-exporter’s own test fixtures (`tests/fixtures/`):
+- Reasoning, `reasoning_recap`, and tool calls to `web.run` / `internal_tool` are omitted, and question/answer order is kept.
+- Generated images link to downloaded filenames.
+- Hidden tool text is skipped.
+
+A synthetic conversation covers:
+- the `current_node` branch only, so an abandoned branch is excluded;
+- system messages, custom instructions, tool calls and raw tool output are left out;
+- private-use citation markers become links, and a Sources list is added;
+- attachment links are escaped;
+- code containing triple backticks gets a longer fence;
+- continuation replies merge into one ChatGPT turn.
+
+Controller tests cover:
+- Save Markdown or JSON without a scan; JSON equals the API response;
+- the transcript is saved last on Download all, linked to the saved names;
+- a transcript-only run when everything was already downloaded;
+- 404, HTML, and non-conversation responses fail only the transcript;
+- Stop.
+
+The Chromium fixture adds:
+- a real Download all run that saves the transcript last;
+- the transcript links to `direct.pdf`;
+- the popup’s **Save JSON** button.
 
 ## Real Chromium fixture (`tests/browser.mjs`)
 
@@ -84,7 +112,18 @@ These cover:
 
 ## Still to verify on the live site
 
-This needs a signed-in ChatGPT tab. These checks could not be run in this environment:
+This needs a signed-in ChatGPT tab.
+
+Attachment downloads have been confirmed on the live site. For the transcript:
+
+0. Click **Save Markdown** on a long conversation with web citations, code and uploads. Check that:
+   - the messages match the visible chat;
+   - citations read as links;
+   - the 📎 links open the downloaded files when the `.md` sits in the same folder.
+
+   Click **Save JSON** and confirm the file opens.
+
+For a fresh install, the attachment smoke test is:
 
 1. Load `extension/` at `chrome://extensions`, then reload a ChatGPT conversation. The popup should show **Auth ready**.
 2. **Scan.** Compare the count and names with the conversation’s attachments.

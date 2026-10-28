@@ -13,7 +13,7 @@ async function fixture() {
   async function code(parts) {
     return `(function(){'use strict';\n${(await Promise.all(parts.map(p => readFile(new URL(`../src/${p}`, import.meta.url), 'utf8')))).join('\n')}\n})();`;
   }
-  const mainCode = await code([...base, 'core/endpoints.js', 'core/auth.js', 'core/transfer.js', 'core/files.js', 'core/controller.js', 'main-world.js']);
+  const mainCode = await code([...base, 'core/endpoints.js', 'core/auth.js', 'core/transfer.js', 'core/files.js', 'core/transcript.js', 'core/controller.js', 'main-world.js']);
   const contentCode = await code([...base, 'content.js']);
   const workerCode = await code([...base, 'service-worker.js']);
   const pageEvents = new Map(), contentEvents = new Map();

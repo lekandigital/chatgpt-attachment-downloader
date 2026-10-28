@@ -34,6 +34,10 @@ The isolated bridge does not turn page messages into arbitrary privileged extens
 
 Other extensions that already intercept page fetches can see the requests they already wrap. This extension cannot protect against a malicious extension, compromised ChatGPT code, injected page scripts, a hostile browser, or an OS-level attacker. Do not interpret “kept in a closure” as isolation from those threats.
 
+## Transcripts
+
+The transcript request (`GET /backend-api/conversation/{id}` for the open conversation only) runs in MAIN through the same request client as attachments. It uses the same captured headers, retries, and abortable waits. The conversation JSON is parsed and rendered in MAIN and saved through the same Blob anchor. Neither the content nor the response ever crosses the bridge or reaches extension storage. Only the transcript’s status, format, message count, timestamp and error category are reported. An HTML or non-conversation response fails the transcript, and nothing is saved.
+
 ## Persistence and diagnostics
 
 The worker applies `Safety.state` / `Safety.history` before every write and serializes writes to avoid stale completion regressions. Values are plain JSON records; no Blob, Request, Headers, AbortController, signed link, or credential is stored. Storage is local, not sync. Previous downloaded records are preserved across tabs; current UI state still reflects each live job.

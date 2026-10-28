@@ -8,7 +8,7 @@ const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), '
 const out = path.join(root, 'extension');
 const common = ['core/config.js', 'core/safety.js', 'core/protocol.js'];
 const bundles = {
-  'main-world.js': [...common, 'core/endpoints.js', 'core/auth.js', 'core/transfer.js', 'core/files.js', 'core/controller.js', 'main-world.js'],
+  'main-world.js': [...common, 'core/endpoints.js', 'core/auth.js', 'core/transfer.js', 'core/files.js', 'core/transcript.js', 'core/controller.js', 'main-world.js'],
   'content.js': [...common, 'content.js'],
   'service-worker.js': [...common, 'service-worker.js'],
   'popup/popup.js': [...common, 'popup/popup.js'],
@@ -27,7 +27,7 @@ for (const [target, sources] of Object.entries(bundles)) {
 await copyFile(path.join(root, 'src', 'manifest.json'), path.join(out, 'manifest.json'));
 for (const file of ['popup.html', 'popup.css']) await copyFile(path.join(root, 'src/popup', file), path.join(out, 'popup', file));
 for (const file of await readdir(path.join(root, 'icons'))) if (file.endsWith('.png')) await copyFile(path.join(root, 'icons', file), path.join(out, 'icons', file));
-for (const file of ['README.md', 'PRIVACY.md', 'SECURITY.md', 'TESTING.md', 'CHANGELOG.md']) {
+for (const file of ['README.md', 'PRIVACY.md', 'SECURITY.md', 'TESTING.md', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md']) {
   try { await copyFile(path.join(root, file), path.join(out, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 console.log('Built extension/ — ready for Chrome Load unpacked.');
